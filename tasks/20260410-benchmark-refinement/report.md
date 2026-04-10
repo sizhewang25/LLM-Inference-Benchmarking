@@ -20,8 +20,8 @@
 
 ```sh
 # (fill in actual invocations)
-python benchmark_gguf.py 2>&1 | tee tasks/benchmark-refinement-20260410/gguf-run.log
-python benchmark_quantize.py 2>&1 | tee tasks/benchmark-refinement-20260410/quantize-run.log
+python benchmark_gguf.py 2>&1 | tee tasks/20260410-benchmark-refinement/gguf-run.log
+python benchmark_quantize.py 2>&1 | tee tasks/20260410-benchmark-refinement/quantize-run.log
 ```
 
 ## Results — `benchmark_gguf.py` (Qwen2.5-7B-Instruct)

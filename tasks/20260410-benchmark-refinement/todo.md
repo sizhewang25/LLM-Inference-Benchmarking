@@ -3,7 +3,7 @@
 ## Docs
 
 - [x] Write `docs/batch-size-notes.md` capturing PyTorch vs llama.cpp batching tradeoffs
-- [x] Scaffold `tasks/benchmark-refinement-20260410/` with background, project plan, todo, test report
+- [x] Scaffold `tasks/20260410-benchmark-refinement/` with background, plan, todo, report
 
 ## Code
 
@@ -37,11 +37,11 @@
 ## Verification
 
 - [x] Static syntax check on each edited file (`python -m py_compile`)
-- [ ] (When GPU available) Run `python benchmark_gguf.py`, capture results in `test-report.md`
-- [ ] (When GPU available) Run `python benchmark_quantize.py`, capture results in `test-report.md`
+- [ ] (When GPU available) Run `python benchmark_gguf.py`, capture results in `report.md`
+- [ ] (When GPU available) Run `python benchmark_quantize.py`, capture results in `report.md`
 - [ ] Confirm DeepSeek-R1-Distill outputs include `<think>` reasoning trace (template applied correctly)
 - [ ] Confirm no `tpot_skipped` warnings under normal operation
-- [ ] Document TTFT delta vs pre-change baseline in `test-report.md`
+- [ ] Document TTFT delta vs pre-change baseline in `report.md`
 
 ## Sign-off
 
