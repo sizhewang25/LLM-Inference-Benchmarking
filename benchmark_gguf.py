@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 
@@ -9,12 +10,16 @@ from gptqmodel.quantization import GGUFConfig
 from bench_utils import (
     PROMPTS,
     benchmark,
+    dump_results,
     format_prompts,
     free_memory,
     pick_device,
     print_comparison,
     print_results,
+    setup_run_logging,
 )
+
+log = logging.getLogger("bench")
 
 # ── Configuration ──────────────────────────────────────────────
 model_id = "Qwen/Qwen2.5-7B-Instruct"
@@ -27,6 +32,10 @@ device = pick_device()
 
 
 def main():
+    run_dir = setup_run_logging(__file__)
+    log.info("device: %s", device)
+    log.info("model: %s", model_id)
+
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if not tokenizer.pad_token_id:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -35,7 +44,7 @@ def main():
     fp16_prompts = format_prompts(tokenizer, prompts)
 
     # ── 1. Benchmark FP16 ──
-    print("\n>>> Loading original FP16 model...")
+    log.info("loading original FP16 model...")
     t0 = time.perf_counter()
     # On MPS, the default SDPA attention path crashes inside generate()
     # ("mps_matmul: invalid shape"), so force the eager implementation.
@@ -43,27 +52,28 @@ def main():
     if device == "mps":
         fp16_kwargs["attn_implementation"] = "eager"
     orig_model = AutoModelForCausalLM.from_pretrained(model_id, **fp16_kwargs)
-    print(f"    Loaded in {time.perf_counter() - t0:.1f}s")
+    log.info("loaded in %.1fs", time.perf_counter() - t0)
 
-    print(">>> Benchmarking FP16 model...")
+    log.info("benchmarking FP16 model...")
     fp16_results = benchmark(orig_model, tokenizer, fp16_prompts, max_new_tokens, warmup_runs, device)
     print_results("FP16 (Original)", fp16_results)
+    dump_results(run_dir, "FP16 (Original)", fp16_results)
 
     del orig_model
     free_memory()
 
     # ── 2. Quantize (GGUF Q4_K_M) — skip if already saved ──
     if os.path.isdir(quant_path):
-        print(f"\n>>> Quantized model found at {quant_path}, skipping quantization.")
+        log.info("quantized model found at %s, skipping quantization.", quant_path)
     else:
-        print(f"\n>>> Quantizing model (GGUF {gguf_format})...")
+        log.info("quantizing model (GGUF %s)...", gguf_format)
         qconfig = GGUFConfig(bits=4, format=gguf_format)
 
         quant_model = GPTQModel.load(model_id, qconfig)
 
         t0 = time.perf_counter()
         quant_model.quantize(calibration=None, tokenizer=tokenizer)
-        print(f"    Quantization took {time.perf_counter() - t0:.1f}s")
+        log.info("quantization took %.1fs", time.perf_counter() - t0)
 
         quant_model.save(quant_path)
         tokenizer.save_pretrained(quant_path)
@@ -71,10 +81,10 @@ def main():
         free_memory()
 
     # ── 3. Benchmark quantized ──
-    print("\n>>> Loading quantized GGUF model...")
+    log.info("loading quantized GGUF model...")
     t0 = time.perf_counter()
     quant_model = GPTQModel.load(quant_path, backend=BACKEND.GGUF_TRITON, device=device)
-    print(f"    Loaded in {time.perf_counter() - t0:.1f}s")
+    log.info("loaded in %.1fs", time.perf_counter() - t0)
 
     # Load the tokenizer from the quantized path so any drift in special
     # tokens, vocab, or chat template stays consistent with the quant model.
@@ -83,9 +93,11 @@ def main():
         quant_tokenizer.pad_token_id = quant_tokenizer.eos_token_id
 
     quant_prompts = format_prompts(quant_tokenizer, prompts)
-    print(f">>> Benchmarking GGUF {gguf_format} model...")
+    log.info("benchmarking GGUF %s model...", gguf_format)
     quant_results = benchmark(quant_model, quant_tokenizer, quant_prompts, max_new_tokens, warmup_runs, device)
-    print_results(f"GGUF {gguf_format} (Quantized)", quant_results)
+    label = f"GGUF {gguf_format} (Quantized)"
+    print_results(label, quant_results)
+    dump_results(run_dir, label, quant_results)
 
     del quant_model
     free_memory()

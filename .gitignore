@@ -12,6 +12,9 @@ GPTQModel/
 # Logs
 *.log
 
+# Benchmark run artifacts
+outputs/
+
 # Python
 __pycache__/
 *.pyc

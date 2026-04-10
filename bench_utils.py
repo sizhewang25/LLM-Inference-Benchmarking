@@ -1,10 +1,67 @@
 import gc
+import json
+import logging
+import os
 import time
+from datetime import datetime
 from statistics import mean, stdev
 
 import torch
 from transformers import GenerationConfig
 from transformers.generation.streamers import BaseStreamer
+
+log = logging.getLogger("bench")
+
+
+def setup_run_logging(script_name):
+    """Configure the `bench` logger to write to both stderr and a per-run log file.
+
+    Output layout, relative to the calling script's directory:
+
+        outputs/<script_name>/<timestamp>/run.log
+        outputs/<script_name>/<timestamp>/<label>.json   (written by dump_results)
+
+    Returns the absolute path to the run directory so the caller can pass it
+    to `dump_results`.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    base_dir = os.path.dirname(os.path.abspath(script_name))
+    run_dir = os.path.join(base_dir, "outputs", os.path.basename(script_name).removesuffix(".py"), timestamp)
+    os.makedirs(run_dir, exist_ok=True)
+
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S")
+
+    root = logging.getLogger("bench")
+    root.setLevel(logging.INFO)
+    # Clear any handlers from a previous setup() call in the same process.
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    file_handler = logging.FileHandler(os.path.join(run_dir, "run.log"))
+    file_handler.setFormatter(formatter)
+    root.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    root.addHandler(stream_handler)
+
+    log.info("run dir: %s", run_dir)
+    return run_dir
+
+
+def dump_results(run_dir, label, results):
+    """Write a benchmark result dict to `<run_dir>/<slug>.json`."""
+    slug = label.lower().replace(" ", "_").replace("(", "").replace(")", "").replace("/", "_")
+    path = os.path.join(run_dir, f"{slug}.json")
+    payload = {
+        "label": label,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "results": results,
+    }
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+    log.info("wrote results json: %s", path)
+    return path
 
 PROMPTS = [
     "Explain the theory of relativity in simple terms.",
@@ -164,9 +221,9 @@ def benchmark(model, tokenizer, prompts, max_new_tokens, warmup_runs, device):
 
         if new_tokens < 2:
             tpot_skipped += 1
-            print(
-                f"  ⚠ skipped TPOT for prompt index {idx} "
-                f"(only {new_tokens} token(s) generated)"
+            log.warning(
+                "skipped TPOT for prompt index %d (only %d token(s) generated)",
+                idx, new_tokens,
             )
             continue
 
@@ -194,17 +251,21 @@ def benchmark(model, tokenizer, prompts, max_new_tokens, warmup_runs, device):
 
 
 def print_results(label, r):
-    print(f"\n{'=' * 60}")
-    print(f"  {label}")
-    print(f"{'=' * 60}")
-    print(f"  Throughput          : {r['throughput_tok_s']:>8.2f} tokens/s")
-    print(f"  TTFT (prefill)      : {r['ttft_mean_ms']:>8.2f} ms  (std {r['ttft_std_ms']:.2f})")
-    print(f"  TPOT (decode)       : {r['tpot_mean_ms']:>8.2f} ms  (std {r['tpot_std_ms']:.2f})")
-    print(f"  Latency (TTFT+TPOT) : {r['latency_mean_ms']:>8.2f} ms  (std {r['latency_std_ms']:.2f})")
-    print(f"  Peak memory         : {r['peak_mem_mb']:>8.1f} MB")
-    print(f"  Samples / tokens    : {r['num_samples']} / {r['total_tokens']}")
+    lines = [
+        "",
+        "=" * 60,
+        f"  {label}",
+        "=" * 60,
+        f"  Throughput          : {r['throughput_tok_s']:>8.2f} tokens/s",
+        f"  TTFT (prefill)      : {r['ttft_mean_ms']:>8.2f} ms  (std {r['ttft_std_ms']:.2f})",
+        f"  TPOT (decode)       : {r['tpot_mean_ms']:>8.2f} ms  (std {r['tpot_std_ms']:.2f})",
+        f"  Latency (TTFT+TPOT) : {r['latency_mean_ms']:>8.2f} ms  (std {r['latency_std_ms']:.2f})",
+        f"  Peak memory         : {r['peak_mem_mb']:>8.1f} MB",
+        f"  Samples / tokens    : {r['num_samples']} / {r['total_tokens']}",
+    ]
     if r.get("tpot_skipped", 0) > 0:
-        print(f"  TPOT skipped        : {r['tpot_skipped']} prompt(s) (<2 tokens generated)")
+        lines.append(f"  TPOT skipped        : {r['tpot_skipped']} prompt(s) (<2 tokens generated)")
+    log.info("\n".join(lines))
 
 
 def print_comparison(label_a, results_a, label_b, results_b):
@@ -215,18 +276,22 @@ def print_comparison(label_a, results_a, label_b, results_b):
         sign = "+" if pct >= 0 else ""
         return f"{sign}{pct:.1f}%"
 
-    print(f"\n{'=' * 60}")
-    print(f"  COMPARISON  ({label_a} vs {label_b})")
-    print(f"{'=' * 60}")
-    print(f"  {'Metric':<22} {label_a:>12} {label_b:>12} {'Delta':>10}")
-    print(f"  {'-' * 56}")
-    print(f"  {'Throughput (tok/s)':<22} {results_a['throughput_tok_s']:>12.2f} {results_b['throughput_tok_s']:>12.2f} {delta(results_b['throughput_tok_s'], results_a['throughput_tok_s']):>10}")
-    print(f"  {'TTFT (ms)':<22} {results_a['ttft_mean_ms']:>12.2f} {results_b['ttft_mean_ms']:>12.2f} {delta(results_b['ttft_mean_ms'], results_a['ttft_mean_ms']):>10}")
-    print(f"  {'TPOT (ms)':<22} {results_a['tpot_mean_ms']:>12.2f} {results_b['tpot_mean_ms']:>12.2f} {delta(results_b['tpot_mean_ms'], results_a['tpot_mean_ms']):>10}")
-    print(f"  {'Latency (ms)':<22} {results_a['latency_mean_ms']:>12.2f} {results_b['latency_mean_ms']:>12.2f} {delta(results_b['latency_mean_ms'], results_a['latency_mean_ms']):>10}")
-    print(f"  {'Peak memory (MB)':<22} {results_a['peak_mem_mb']:>12.1f} {results_b['peak_mem_mb']:>12.1f} {delta(results_b['peak_mem_mb'], results_a['peak_mem_mb']):>10}")
-    print(f"  {'-' * 56}")
     speedup = results_b["throughput_tok_s"] / results_a["throughput_tok_s"] if results_a["throughput_tok_s"] else 0
     mem_saved = (1 - results_b["peak_mem_mb"] / results_a["peak_mem_mb"]) * 100 if results_a["peak_mem_mb"] else 0
-    print(f"  Speedup: {speedup:.2f}x  |  Memory saved: {mem_saved:.1f}%")
-    print(f"{'=' * 60}")
+    lines = [
+        "",
+        "=" * 60,
+        f"  COMPARISON  ({label_a} vs {label_b})",
+        "=" * 60,
+        f"  {'Metric':<22} {label_a:>12} {label_b:>12} {'Delta':>10}",
+        f"  {'-' * 56}",
+        f"  {'Throughput (tok/s)':<22} {results_a['throughput_tok_s']:>12.2f} {results_b['throughput_tok_s']:>12.2f} {delta(results_b['throughput_tok_s'], results_a['throughput_tok_s']):>10}",
+        f"  {'TTFT (ms)':<22} {results_a['ttft_mean_ms']:>12.2f} {results_b['ttft_mean_ms']:>12.2f} {delta(results_b['ttft_mean_ms'], results_a['ttft_mean_ms']):>10}",
+        f"  {'TPOT (ms)':<22} {results_a['tpot_mean_ms']:>12.2f} {results_b['tpot_mean_ms']:>12.2f} {delta(results_b['tpot_mean_ms'], results_a['tpot_mean_ms']):>10}",
+        f"  {'Latency (ms)':<22} {results_a['latency_mean_ms']:>12.2f} {results_b['latency_mean_ms']:>12.2f} {delta(results_b['latency_mean_ms'], results_a['latency_mean_ms']):>10}",
+        f"  {'Peak memory (MB)':<22} {results_a['peak_mem_mb']:>12.1f} {results_b['peak_mem_mb']:>12.1f} {delta(results_b['peak_mem_mb'], results_a['peak_mem_mb']):>10}",
+        f"  {'-' * 56}",
+        f"  Speedup: {speedup:.2f}x  |  Memory saved: {mem_saved:.1f}%",
+        "=" * 60,
+    ]
+    log.info("\n".join(lines))

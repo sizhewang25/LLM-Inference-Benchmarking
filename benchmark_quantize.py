@@ -1,3 +1,4 @@
+import logging
 import time
 
 import torch
@@ -7,12 +8,16 @@ from gptqmodel import GPTQModel
 from bench_utils import (
     PROMPTS,
     benchmark,
+    dump_results,
     format_prompts,
     free_memory,
     pick_device,
     print_comparison,
     print_results,
+    setup_run_logging,
 )
+
+log = logging.getLogger("bench")
 
 # ── Configuration ──────────────────────────────────────────────
 model_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
@@ -24,6 +29,11 @@ device = pick_device()
 
 
 def main():
+    run_dir = setup_run_logging(__file__)
+    log.info("device: %s", device)
+    log.info("model: %s", model_id)
+    log.info("quant: %s", quant_id)
+
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if not tokenizer.pad_token_id:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -32,7 +42,7 @@ def main():
     fp16_prompts = format_prompts(tokenizer, prompts)
 
     # ── 1. Benchmark FP16 ──
-    print("\n>>> Loading original FP16 model...")
+    log.info("loading original FP16 model...")
     t0 = time.perf_counter()
     # On MPS, the default SDPA attention path crashes inside generate()
     # ("mps_matmul: invalid shape"), so force the eager implementation.
@@ -40,20 +50,21 @@ def main():
     if device == "mps":
         fp16_kwargs["attn_implementation"] = "eager"
     orig_model = AutoModelForCausalLM.from_pretrained(model_id, **fp16_kwargs)
-    print(f"    Loaded in {time.perf_counter() - t0:.1f}s")
+    log.info("loaded in %.1fs", time.perf_counter() - t0)
 
-    print(">>> Benchmarking FP16 model...")
+    log.info("benchmarking FP16 model...")
     fp16_results = benchmark(orig_model, tokenizer, fp16_prompts, max_new_tokens, warmup_runs, device)
     print_results("FP16 (Original)", fp16_results)
+    dump_results(run_dir, "FP16 (Original)", fp16_results)
 
     del orig_model
     free_memory()
 
     # ── 2. Benchmark pre-quantized GPTQ model ──
-    print(f"\n>>> Loading pre-quantized GPTQ model: {quant_id}")
+    log.info("loading pre-quantized GPTQ model: %s", quant_id)
     t0 = time.perf_counter()
     quant_model = GPTQModel.load(quant_id, device=device)
-    print(f"    Loaded in {time.perf_counter() - t0:.1f}s")
+    log.info("loaded in %.1fs", time.perf_counter() - t0)
 
     # Prefer the tokenizer shipped with the quantized repo so any drift in
     # special tokens or chat template stays consistent with the quant model.
@@ -62,13 +73,14 @@ def main():
         if not quant_tokenizer.pad_token_id:
             quant_tokenizer.pad_token_id = quant_tokenizer.eos_token_id
     except Exception as e:
-        print(f"  ⚠ could not load tokenizer from {quant_id} ({e}); falling back to base tokenizer")
+        log.warning("could not load tokenizer from %s (%s); falling back to base tokenizer", quant_id, e)
         quant_tokenizer = tokenizer
 
     quant_prompts = format_prompts(quant_tokenizer, prompts)
-    print(">>> Benchmarking GPTQ 4-bit model...")
+    log.info("benchmarking GPTQ 4-bit model...")
     quant_results = benchmark(quant_model, quant_tokenizer, quant_prompts, max_new_tokens, warmup_runs, device)
     print_results("GPTQ 4-bit (Quantized)", quant_results)
+    dump_results(run_dir, "GPTQ 4-bit (Quantized)", quant_results)
 
     del quant_model
     free_memory()
