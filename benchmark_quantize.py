@@ -44,12 +44,17 @@ def main():
     # ── 1. Benchmark FP16 ──
     log.info("loading original FP16 model...")
     t0 = time.perf_counter()
-    # On MPS, the default SDPA attention path crashes inside generate()
-    # ("mps_matmul: invalid shape"), so force the eager implementation.
-    fp16_kwargs = {"torch_dtype": torch.float16, "device_map": device}
+    fp16_kwargs = {"torch_dtype": torch.float16}
     if device == "mps":
+        # See benchmark_gguf.py for full rationale: MPS needs eager attention
+        # for generate(), and `device_map=` triggers an accelerate warmup that
+        # blows past Apple's per-buffer size limit on 7B models. Use plain
+        # `.to(device)` to load tensor-by-tensor instead.
         fp16_kwargs["attn_implementation"] = "eager"
-    orig_model = AutoModelForCausalLM.from_pretrained(model_id, **fp16_kwargs)
+        orig_model = AutoModelForCausalLM.from_pretrained(model_id, **fp16_kwargs).to(device)
+    else:
+        fp16_kwargs["device_map"] = device
+        orig_model = AutoModelForCausalLM.from_pretrained(model_id, **fp16_kwargs)
     log.info("loaded in %.1fs", time.perf_counter() - t0)
 
     log.info("benchmarking FP16 model...")
