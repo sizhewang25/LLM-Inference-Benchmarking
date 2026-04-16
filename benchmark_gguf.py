@@ -25,7 +25,7 @@ log = logging.getLogger("bench")
 # Tiny model for local end-to-end smoke runs (already cached on dev Mac).
 # For the real 7B comparison, swap back to "Qwen/Qwen2.5-7B-Instruct".
 model_id = "Qwen/Qwen2.5-0.5B-Instruct"
-quant_path = "Qwen2.5-0.5B-Instruct-GGUF-Q4_K_M"
+quant_path = "models/Qwen2.5-0.5B-Instruct-GGUF-Q4_K_M"
 gguf_format = "q4_k_m"
 num_samples = 10
 max_new_tokens = 128
