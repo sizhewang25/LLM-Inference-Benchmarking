@@ -307,3 +307,94 @@ def print_comparison(label_a, results_a, label_b, results_b):
         "=" * 60,
     ]
     log.info("\n".join(lines))
+
+
+def benchmark_mlx_model(model, tokenizer, prompts, max_new_tokens, warmup_runs):
+    """Benchmark an MLX model loaded via mlx_lm.load().
+
+    Uses mlx_lm.stream_generate instead of HuggingFace .generate(), so this
+    function is the MLX counterpart of benchmark(). Returns the same 11-key
+    dict so print_results(), print_comparison(), and dump_results() work
+    without modification.
+
+    Requires mlx and mlx-lm to be installed (Apple Silicon only). The imports
+    are deferred so bench_utils remains importable on CUDA-only machines.
+    """
+    try:
+        import mlx.core as mx
+        from mlx_lm import stream_generate
+    except ImportError as exc:
+        raise ImportError(
+            "mlx and mlx-lm are required for benchmark_mlx_model(). "
+            "Install with: pip install mlx-lm"
+        ) from exc
+
+    # ── Warmup ────────────────────────────────────────────────────────────────
+    for i in range(min(warmup_runs, len(prompts))):
+        for _ in stream_generate(model, tokenizer, prompts[i], max_tokens=max_new_tokens):
+            pass
+    mx.eval()  # flush any deferred Metal compute from warmup
+
+    # ── Measure ───────────────────────────────────────────────────────────────
+    mx.reset_peak_memory()
+
+    all_ttft = []
+    all_latency = []
+    all_tpot = []
+    all_tokens = []
+    tpot_skipped = 0
+
+    for idx, prompt in enumerate(prompts):
+        t_start = time.perf_counter()
+        first_token = None
+        yield_count = 0
+        final_gen_tokens = 0
+
+        for response in stream_generate(model, tokenizer, prompt, max_tokens=max_new_tokens):
+            if first_token is None:
+                first_token = time.perf_counter()
+            yield_count += 1
+            # generation_tokens is the running output-token count in mlx-lm;
+            # fall back to counting yields in case the attribute name drifts
+            # across mlx-lm versions.
+            final_gen_tokens = getattr(response, "generation_tokens", yield_count)
+
+        mx.eval()  # flush deferred Metal work before recording end time
+        t_end = time.perf_counter()
+
+        new_tokens = final_gen_tokens
+        latency_ms = (t_end - t_start) * 1000
+        ttft_ms = ((first_token - t_start) * 1000) if first_token is not None else latency_ms
+
+        all_ttft.append(ttft_ms)
+        all_latency.append(latency_ms)
+        all_tokens.append(new_tokens)
+
+        if new_tokens < 2:
+            tpot_skipped += 1
+            log.warning(
+                "skipped TPOT for prompt index %d (only %d token(s) generated)",
+                idx, new_tokens,
+            )
+            continue
+
+        decode_tokens = new_tokens - 1
+        decode_time_ms = latency_ms - ttft_ms
+        all_tpot.append(decode_time_ms / decode_tokens)
+
+    total_tokens = sum(all_tokens)
+    total_time_s = sum(all_latency) / 1000
+
+    return {
+        "throughput_tok_s": total_tokens / total_time_s,
+        "ttft_mean_ms": mean(all_ttft),
+        "ttft_std_ms": stdev(all_ttft) if len(all_ttft) > 1 else 0,
+        "latency_mean_ms": mean(all_latency),
+        "latency_std_ms": stdev(all_latency) if len(all_latency) > 1 else 0,
+        "tpot_mean_ms": mean(all_tpot) if all_tpot else 0,
+        "tpot_std_ms": stdev(all_tpot) if len(all_tpot) > 1 else 0,
+        "tpot_skipped": tpot_skipped,
+        "peak_mem_mb": mx.get_peak_memory() / 1024 / 1024,
+        "num_samples": len(prompts),
+        "total_tokens": total_tokens,
+    }
