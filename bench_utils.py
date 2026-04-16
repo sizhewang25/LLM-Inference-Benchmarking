@@ -448,6 +448,111 @@ def benchmark(model, tokenizer, prompts, max_new_tokens, warmup_runs, device):
     }
 
 
+def evaluate_gsm8k(model, tokenizer, questions, max_new_tokens, warmup_runs, device):
+    """Run GSM8K evaluation: speed metrics + accuracy in a single pass.
+
+    Mirrors the timing structure of benchmark() but formats GSM8K prompts,
+    decodes generated text, and scores accuracy via parse_gsm8k_answer().
+
+    Returns the standard 11-key speed dict plus:
+        gsm8k_accuracy: float (0.0 to 1.0)
+        gsm8k_correct: int
+        gsm8k_total: int
+    """
+    raw_prompts = [GSM8K_INSTRUCTION + q["question"] for q in questions]
+    prompts = format_prompts(tokenizer, raw_prompts)
+
+    gen_config = GenerationConfig(
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        pad_token_id=tokenizer.pad_token_id,
+    )
+
+    # Warmup
+    for i in range(min(warmup_runs, len(prompts))):
+        inputs = tokenizer(prompts[i], return_tensors="pt").to(device)
+        with torch.no_grad():
+            model.generate(**inputs, generation_config=gen_config)
+    sync_device(device)
+
+    # Measure
+    reset_peak_memory(device)
+
+    all_ttft = []
+    all_latency = []
+    all_tpot = []
+    all_tokens = []
+    tpot_skipped = 0
+    correct = 0
+
+    for idx, (prompt, item) in enumerate(zip(prompts, questions)):
+        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        input_len = inputs["input_ids"].shape[1]
+
+        streamer = TTFTStreamer()
+        sync_device(device)
+
+        streamer.start_time = time.perf_counter()
+        t_start = streamer.start_time
+
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs, generation_config=gen_config, streamer=streamer,
+            )
+
+        sync_device(device)
+        t_end = time.perf_counter()
+
+        # Decode only the new tokens for accuracy scoring
+        new_token_ids = output_ids[0, input_len:]
+        model_output = tokenizer.decode(new_token_ids, skip_special_tokens=True)
+
+        predicted = parse_gsm8k_answer(model_output)
+        if predicted is not None and abs(predicted - item["answer"]) < 1e-3:
+            correct += 1
+
+        # Timing (identical to benchmark())
+        new_tokens = output_ids.shape[1] - input_len
+        latency = t_end - t_start
+        ttft = (streamer.first_token_time - t_start) if streamer.first_token_time else latency
+
+        all_ttft.append(ttft * 1000)
+        all_latency.append(latency * 1000)
+        all_tokens.append(new_tokens)
+
+        if new_tokens < 2:
+            tpot_skipped += 1
+            log.warning(
+                "skipped TPOT for prompt index %d (only %d token(s) generated)",
+                idx, new_tokens,
+            )
+            continue
+
+        decode_tokens = new_tokens - 1
+        decode_time = latency - ttft
+        all_tpot.append((decode_time / decode_tokens) * 1000)
+
+    total_tokens = sum(all_tokens)
+    total_time = sum(all_latency) / 1000
+
+    return {
+        "throughput_tok_s": total_tokens / total_time,
+        "ttft_mean_ms": mean(all_ttft),
+        "ttft_std_ms": stdev(all_ttft) if len(all_ttft) > 1 else 0,
+        "latency_mean_ms": mean(all_latency),
+        "latency_std_ms": stdev(all_latency) if len(all_latency) > 1 else 0,
+        "tpot_mean_ms": mean(all_tpot) if all_tpot else 0,
+        "tpot_std_ms": stdev(all_tpot) if len(all_tpot) > 1 else 0,
+        "tpot_skipped": tpot_skipped,
+        "peak_mem_mb": get_peak_memory_mb(device),
+        "num_samples": len(questions),
+        "total_tokens": total_tokens,
+        "gsm8k_accuracy": correct / len(questions),
+        "gsm8k_correct": correct,
+        "gsm8k_total": len(questions),
+    }
+
+
 def print_results(label, r):
     lines = [
         "",
@@ -463,6 +568,11 @@ def print_results(label, r):
     ]
     if "perplexity" in r:
         lines.append(f"  Perplexity          : {r['perplexity']:>8.2f}")
+    if "gsm8k_accuracy" in r:
+        lines.append(
+            f"  GSM8K accuracy      : {r['gsm8k_accuracy']:>7.1%}  "
+            f"({r['gsm8k_correct']}/{r['gsm8k_total']})"
+        )
     if r.get("tpot_skipped", 0) > 0:
         lines.append(f"  TPOT skipped        : {r['tpot_skipped']} prompt(s) (<2 tokens generated)")
     log.info("\n".join(lines))
@@ -494,6 +604,10 @@ def print_comparison(label_a, results_a, label_b, results_b):
     if "perplexity" in results_a and "perplexity" in results_b:
         lines.append(
             f"  {'Perplexity':<22} {results_a['perplexity']:>12.2f} {results_b['perplexity']:>12.2f} {delta(results_b['perplexity'], results_a['perplexity']):>10}"
+        )
+    if "gsm8k_accuracy" in results_a and "gsm8k_accuracy" in results_b:
+        lines.append(
+            f"  {'GSM8K accuracy':<22} {results_a['gsm8k_accuracy']:>11.1%} {results_b['gsm8k_accuracy']:>11.1%} {delta(results_b['gsm8k_accuracy'], results_a['gsm8k_accuracy']):>10}"
         )
     lines += [
         f"  {'-' * 56}",
@@ -591,4 +705,104 @@ def benchmark_mlx_model(model, tokenizer, prompts, max_new_tokens, warmup_runs):
         "peak_mem_mb": mx.get_peak_memory() / 1024 / 1024,
         "num_samples": len(prompts),
         "total_tokens": total_tokens,
+    }
+
+
+def evaluate_gsm8k_mlx(model, tokenizer, questions, max_new_tokens, warmup_runs):
+    """MLX counterpart of evaluate_gsm8k(). Returns same dict format.
+
+    Uses mlx_lm.stream_generate for timing and collects output text
+    for accuracy scoring.
+    """
+    try:
+        import mlx.core as mx
+        from mlx_lm import stream_generate
+    except ImportError as exc:
+        raise ImportError(
+            "mlx and mlx-lm are required for evaluate_gsm8k_mlx(). "
+            "Install with: pip install mlx-lm"
+        ) from exc
+
+    raw_prompts = [GSM8K_INSTRUCTION + q["question"] for q in questions]
+    prompts = format_prompts(tokenizer, raw_prompts)
+
+    # Warmup
+    for i in range(min(warmup_runs, len(prompts))):
+        for _ in stream_generate(model, tokenizer, prompts[i], max_tokens=max_new_tokens):
+            pass
+    mx.eval()
+
+    # Measure
+    mx.reset_peak_memory()
+
+    all_ttft = []
+    all_latency = []
+    all_tpot = []
+    all_tokens = []
+    tpot_skipped = 0
+    correct = 0
+
+    for idx, (prompt, item) in enumerate(zip(prompts, questions)):
+        t_start = time.perf_counter()
+        first_token = None
+        yield_count = 0
+        final_gen_tokens = 0
+        output_chunks = []
+
+        for response in stream_generate(model, tokenizer, prompt, max_tokens=max_new_tokens):
+            if first_token is None:
+                first_token = time.perf_counter()
+            yield_count += 1
+            final_gen_tokens = getattr(response, "generation_tokens", yield_count)
+            # Collect text — response.text may be cumulative or per-token
+            # depending on mlx-lm version, so we take the last value.
+            output_chunks.append(getattr(response, "text", ""))
+
+        mx.eval()
+        t_end = time.perf_counter()
+
+        # Use the last chunk as the full output (cumulative in current mlx-lm)
+        model_output = output_chunks[-1] if output_chunks else ""
+
+        predicted = parse_gsm8k_answer(model_output)
+        if predicted is not None and abs(predicted - item["answer"]) < 1e-3:
+            correct += 1
+
+        new_tokens = final_gen_tokens
+        latency_ms = (t_end - t_start) * 1000
+        ttft_ms = ((first_token - t_start) * 1000) if first_token is not None else latency_ms
+
+        all_ttft.append(ttft_ms)
+        all_latency.append(latency_ms)
+        all_tokens.append(new_tokens)
+
+        if new_tokens < 2:
+            tpot_skipped += 1
+            log.warning(
+                "skipped TPOT for prompt index %d (only %d token(s) generated)",
+                idx, new_tokens,
+            )
+            continue
+
+        decode_time_ms = latency_ms - ttft_ms
+        all_tpot.append(decode_time_ms / (new_tokens - 1))
+
+    total_tokens = sum(all_tokens)
+    total_time_s = sum(all_latency) / 1000
+
+    return {
+        "throughput_tok_s": total_tokens / total_time_s,
+        "ttft_mean_ms": mean(all_ttft),
+        "ttft_std_ms": stdev(all_ttft) if len(all_ttft) > 1 else 0,
+        "latency_mean_ms": mean(all_latency),
+        "latency_std_ms": stdev(all_latency) if len(all_latency) > 1 else 0,
+        "tpot_mean_ms": mean(all_tpot) if all_tpot else 0,
+        "tpot_std_ms": stdev(all_tpot) if len(all_tpot) > 1 else 0,
+        "tpot_skipped": tpot_skipped,
+        "peak_mem_mb": mx.get_peak_memory() / 1024 / 1024,
+        "num_samples": len(questions),
+        "total_tokens": total_tokens,
+        "gsm8k_accuracy": correct / len(questions),
+        "gsm8k_correct": correct,
+        "gsm8k_total": len(questions),
     }
