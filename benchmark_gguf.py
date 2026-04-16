@@ -8,12 +8,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from gptqmodel import BACKEND, GPTQModel
 from gptqmodel.quantization import GGUFConfig
 from bench_utils import (
-    PROMPTS,
-    benchmark,
     compute_perplexity,
     dump_results,
-    format_prompts,
+    evaluate_gsm8k,
     free_memory,
+    load_gsm8k_questions,
     load_wikitext2_tokens,
     pick_device,
     print_comparison,
@@ -29,9 +28,9 @@ log = logging.getLogger("bench")
 model_id = "Qwen/Qwen2.5-0.5B-Instruct"
 quant_path = "models/Qwen2.5-0.5B-Instruct-GGUF-Q4_K_M"
 gguf_format = "q4_k_m"
-num_samples = 10
-max_new_tokens = 128
-warmup_runs = 2
+gsm8k_samples    = 100
+gsm8k_max_tokens = 512
+warmup_runs      = 2
 device = pick_device()
 
 
@@ -44,8 +43,8 @@ def main():
     if not tokenizer.pad_token_id:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    prompts = PROMPTS[:num_samples]
-    fp16_prompts = format_prompts(tokenizer, prompts)
+    gsm8k_questions = load_gsm8k_questions(num_samples=gsm8k_samples)
+    log.info("loaded %d GSM8K questions", len(gsm8k_questions))
 
     # ── 1. Benchmark FP16 ──
     log.info("loading original FP16 model...")
@@ -67,8 +66,9 @@ def main():
         orig_model = AutoModelForCausalLM.from_pretrained(model_id, **fp16_kwargs)
     log.info("loaded in %.1fs", time.perf_counter() - t0)
 
-    log.info("benchmarking FP16 model...")
-    fp16_results = benchmark(orig_model, tokenizer, fp16_prompts, max_new_tokens, warmup_runs, device)
+    log.info("evaluating GSM8K (FP16)...")
+    fp16_results = evaluate_gsm8k(orig_model, tokenizer, gsm8k_questions, gsm8k_max_tokens, warmup_runs, device)
+    log.info("FP16 GSM8K accuracy: %.1f%%", fp16_results["gsm8k_accuracy"] * 100)
 
     log.info("computing perplexity (FP16)...")
     wikitext_tokens = load_wikitext2_tokens(tokenizer)
@@ -124,9 +124,9 @@ def main():
     if not quant_tokenizer.pad_token_id:
         quant_tokenizer.pad_token_id = quant_tokenizer.eos_token_id
 
-    quant_prompts = format_prompts(quant_tokenizer, prompts)
-    log.info("benchmarking GGUF %s model...", gguf_format)
-    quant_results = benchmark(quant_model, quant_tokenizer, quant_prompts, max_new_tokens, warmup_runs, device)
+    log.info("evaluating GSM8K (GGUF %s)...", gguf_format)
+    quant_results = evaluate_gsm8k(quant_model, quant_tokenizer, gsm8k_questions, gsm8k_max_tokens, warmup_runs, device)
+    log.info("GGUF GSM8K accuracy: %.1f%%", quant_results["gsm8k_accuracy"] * 100)
 
     log.info("computing perplexity (GGUF %s)...", gguf_format)
     quant_wikitext_tokens = load_wikitext2_tokens(quant_tokenizer)

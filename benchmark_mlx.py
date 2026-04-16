@@ -2,12 +2,11 @@ import logging
 import time
 
 from bench_utils import (
-    PROMPTS,
-    benchmark_mlx_model,
     compute_perplexity_mlx,
     dump_results,
-    format_prompts,
+    evaluate_gsm8k_mlx,
     free_memory,
+    load_gsm8k_questions,
     load_wikitext2_tokens,
     print_comparison,
     print_results,
@@ -29,9 +28,9 @@ log = logging.getLogger("bench")
 fp16_model_id  = "Qwen/Qwen2.5-0.5B-Instruct"
 # MLX-quantized: pre-quantized INT4 model from the mlx-community org on Hub.
 quant_model_id = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-num_samples    = 10
-max_new_tokens = 128
-warmup_runs    = 2
+gsm8k_samples    = 100
+gsm8k_max_tokens = 512
+warmup_runs      = 2
 
 
 def main():
@@ -39,7 +38,8 @@ def main():
     log.info("fp16 model  : %s", fp16_model_id)
     log.info("quant model : %s", quant_model_id)
 
-    prompts = PROMPTS[:num_samples]
+    gsm8k_questions = load_gsm8k_questions(num_samples=gsm8k_samples)
+    log.info("loaded %d GSM8K questions", len(gsm8k_questions))
 
     # ── 1. Benchmark FP16 (MLX) ───────────────────────────────────────────────
     log.info("loading FP16 model via mlx_lm...")
@@ -47,12 +47,11 @@ def main():
     fp16_model, fp16_tokenizer = mlx_load(fp16_model_id)
     log.info("loaded in %.1fs", time.perf_counter() - t0)
 
-    fp16_prompts = format_prompts(fp16_tokenizer, prompts)
-
-    log.info("benchmarking FP16 model...")
-    fp16_results = benchmark_mlx_model(
-        fp16_model, fp16_tokenizer, fp16_prompts, max_new_tokens, warmup_runs
+    log.info("evaluating GSM8K (FP16 MLX)...")
+    fp16_results = evaluate_gsm8k_mlx(
+        fp16_model, fp16_tokenizer, gsm8k_questions, gsm8k_max_tokens, warmup_runs
     )
+    log.info("FP16 MLX GSM8K accuracy: %.1f%%", fp16_results["gsm8k_accuracy"] * 100)
 
     log.info("computing perplexity (FP16 MLX)...")
     wikitext_tokens = load_wikitext2_tokens(fp16_tokenizer)
@@ -71,12 +70,11 @@ def main():
     quant_model, quant_tokenizer = mlx_load(quant_model_id)
     log.info("loaded in %.1fs", time.perf_counter() - t0)
 
-    quant_prompts = format_prompts(quant_tokenizer, prompts)
-
-    log.info("benchmarking MLX 4-bit model...")
-    quant_results = benchmark_mlx_model(
-        quant_model, quant_tokenizer, quant_prompts, max_new_tokens, warmup_runs
+    log.info("evaluating GSM8K (MLX 4-bit)...")
+    quant_results = evaluate_gsm8k_mlx(
+        quant_model, quant_tokenizer, gsm8k_questions, gsm8k_max_tokens, warmup_runs
     )
+    log.info("MLX 4-bit GSM8K accuracy: %.1f%%", quant_results["gsm8k_accuracy"] * 100)
 
     log.info("computing perplexity (MLX 4-bit)...")
     quant_wikitext_tokens = load_wikitext2_tokens(quant_tokenizer)
