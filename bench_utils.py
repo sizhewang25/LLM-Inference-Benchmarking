@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -210,6 +211,73 @@ def load_wikitext2_tokens(tokenizer):
     # TokenizerWrapper (delegates to ._tokenizer).
     inner = getattr(tokenizer, "_tokenizer", tokenizer)
     return inner.encode(text)
+
+
+GSM8K_INSTRUCTION = (
+    "Solve this math problem step by step. "
+    "Put your final answer after ####.\n\n"
+)
+
+
+def load_gsm8k_questions(num_samples=100, seed=42):
+    """Load GSM8K test questions via hf_hub_download + pyarrow.
+
+    Returns a list of dicts: [{"question": str, "answer": float}, ...]
+    The answer is the numeric value after #### in the original answer string.
+    Uses a fixed seed for reproducible subset selection across runs.
+    """
+    import random
+
+    from huggingface_hub import hf_hub_download
+    import pyarrow.parquet as pq
+
+    path = hf_hub_download(
+        repo_id="openai/gsm8k",
+        repo_type="dataset",
+        filename="main/test-00000-of-00001.parquet",
+    )
+    table = pq.read_table(path)
+    questions_raw = table.column("question").to_pylist()
+    answers_raw = table.column("answer").to_pylist()
+
+    items = []
+    for q, a in zip(questions_raw, answers_raw):
+        answer_num = float(a.split("####")[-1].strip().replace(",", ""))
+        items.append({"question": q, "answer": answer_num})
+
+    if num_samples < len(items):
+        rng = random.Random(seed)
+        items = rng.sample(items, num_samples)
+
+    return items
+
+
+def parse_gsm8k_answer(model_output):
+    """Extract the final numeric answer from model output.
+
+    Extraction priority:
+      1. #### <number>  (what we instruct the model to produce)
+      2. \\boxed{<number>}  (LaTeX, common in reasoning models like QwQ)
+      3. Last number in the text  (fallback)
+
+    Returns float or None if no number found.
+    """
+    # Priority 1: #### pattern
+    match = re.search(r"####\s*([+-]?[\d,]+\.?\d*)", model_output)
+    if match:
+        return float(match.group(1).replace(",", ""))
+
+    # Priority 2: \boxed{} pattern
+    match = re.search(r"\\boxed\{([+-]?[\d,]+\.?\d*)\}", model_output)
+    if match:
+        return float(match.group(1).replace(",", ""))
+
+    # Priority 3: last number in text
+    numbers = re.findall(r"[+-]?[\d,]+\.?\d*", model_output)
+    if numbers:
+        return float(numbers[-1].replace(",", ""))
+
+    return None
 
 
 def compute_perplexity(model, token_ids, device, max_length=2048, stride=512):
