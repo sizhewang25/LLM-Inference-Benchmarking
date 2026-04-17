@@ -1,4 +1,5 @@
 import logging
+import sys
 import time
 
 from bench_utils import (
@@ -27,25 +28,20 @@ log = logging.getLogger("bench")
 # ── Configuration ──────────────────────────────────────────────────────────────
 MODEL_CONFIGS = [
     {
-        "name": "Qwen2.5-0.5B-Instruct",
-        "fp16_id": "Qwen/Qwen2.5-0.5B-Instruct",
-        "quant_id": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+        "name": "Qwen2.5-7B-Instruct",
+        "fp16_id": "Qwen/Qwen2.5-7B-Instruct",
+        "quant_id": "mlx-community/Qwen2.5-7B-Instruct-4bit",
     },
-    # {
-    #     "name": "Llama-3.1-8B-Instruct",
-    #     "fp16_id": "meta-llama/Llama-3.1-8B-Instruct",
-    #     "quant_id": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
-    # },
-    # {
-    #     "name": "Qwen2.5-7B-Instruct",
-    #     "fp16_id": "Qwen/Qwen2.5-7B-Instruct",
-    #     "quant_id": "mlx-community/Qwen2.5-7B-Instruct-4bit",
-    # },
-    # {
-    #     "name": "Gemma-2-9B-it",
-    #     "fp16_id": "google/gemma-2-9b-it",
-    #     "quant_id": "mlx-community/gemma-2-9b-it-4bit",
-    # },
+    {
+        "name": "Llama-3.1-8B-Instruct",
+        "fp16_id": "meta-llama/Llama-3.1-8B-Instruct",
+        "quant_id": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
+    },
+    {
+        "name": "Gemma-2-9B-it",
+        "fp16_id": "google/gemma-2-9b-it",
+        "quant_id": "mlx-community/gemma-2-9b-it-4bit",
+    },
 ]
 
 gsm8k_samples    = 50
@@ -131,12 +127,20 @@ def benchmark_model_pair(run_dir, config, gsm8k_questions):
 
 def main():
     run_dir = setup_run_logging(__file__)
-    log.info("models: %s", [c["name"] for c in MODEL_CONFIGS])
+
+    # CLI: pass model index to run a single model (e.g., `python3 benchmark_mlx.py 1`)
+    if len(sys.argv) > 1:
+        idx = int(sys.argv[1])
+        configs = [MODEL_CONFIGS[idx]]
+    else:
+        configs = MODEL_CONFIGS
+
+    log.info("models: %s", [c["name"] for c in configs])
 
     gsm8k_questions = load_gsm8k_questions(num_samples=gsm8k_samples)
     log.info("loaded %d GSM8K questions", len(gsm8k_questions))
 
-    for config in MODEL_CONFIGS:
+    for config in configs:
         benchmark_model_pair(run_dir, config, gsm8k_questions)
 
 

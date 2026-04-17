@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 import time
 
 import torch
@@ -29,25 +30,20 @@ log = logging.getLogger("bench")
 # ── Configuration ──────────────────────────────────────────────
 MODEL_CONFIGS = [
     {
-        "name": "Qwen2.5-0.5B-Instruct",
-        "fp16_id": "Qwen/Qwen2.5-0.5B-Instruct",
-        "quant_path": "models/Qwen2.5-0.5B-Instruct-GGUF-Q4_K_M",
+        "name": "Qwen2.5-7B-Instruct",
+        "fp16_id": "Qwen/Qwen2.5-7B-Instruct",
+        "quant_path": "models/Qwen2.5-7B-Instruct-GGUF-Q4_K_M",
     },
-    # {
-    #     "name": "Llama-3.1-8B-Instruct",
-    #     "fp16_id": "meta-llama/Llama-3.1-8B-Instruct",
-    #     "quant_path": "models/Llama-3.1-8B-Instruct-GGUF-Q4_K_M",
-    # },
-    # {
-    #     "name": "Qwen2.5-7B-Instruct",
-    #     "fp16_id": "Qwen/Qwen2.5-7B-Instruct",
-    #     "quant_path": "models/Qwen2.5-7B-Instruct-GGUF-Q4_K_M",
-    # },
-    # {
-    #     "name": "Gemma-2-9B-it",
-    #     "fp16_id": "google/gemma-2-9b-it",
-    #     "quant_path": "models/Gemma-2-9B-it-GGUF-Q4_K_M",
-    # },
+    {
+        "name": "Llama-3.1-8B-Instruct",
+        "fp16_id": "meta-llama/Llama-3.1-8B-Instruct",
+        "quant_path": "models/Llama-3.1-8B-Instruct-GGUF-Q4_K_M",
+    },
+    {
+        "name": "Gemma-2-9B-it",
+        "fp16_id": "google/gemma-2-9b-it",
+        "quant_path": "models/Gemma-2-9B-it-GGUF-Q4_K_M",
+    },
 ]
 
 gguf_format      = "q4_k_m"
@@ -167,7 +163,15 @@ def benchmark_model_pair(run_dir, config, gsm8k_questions, gguf_backend):
 def main():
     run_dir = setup_run_logging(__file__)
     log.info("device: %s", device)
-    log.info("models: %s", [c["name"] for c in MODEL_CONFIGS])
+
+    # CLI: pass model index to run a single model (e.g., `python3 benchmark_gguf.py 1`)
+    if len(sys.argv) > 1:
+        idx = int(sys.argv[1])
+        configs = [MODEL_CONFIGS[idx]]
+    else:
+        configs = MODEL_CONFIGS
+
+    log.info("models: %s", [c["name"] for c in configs])
 
     gguf_backend = BACKEND.GGUF_TRITON if device.startswith("cuda") else BACKEND.GGUF_TORCH
     log.info("gguf backend: %s", gguf_backend)
@@ -175,7 +179,7 @@ def main():
     gsm8k_questions = load_gsm8k_questions(num_samples=gsm8k_samples)
     log.info("loaded %d GSM8K questions", len(gsm8k_questions))
 
-    for config in MODEL_CONFIGS:
+    for config in configs:
         benchmark_model_pair(run_dir, config, gsm8k_questions, gguf_backend)
 
 
