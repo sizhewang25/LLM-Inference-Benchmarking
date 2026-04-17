@@ -1,3 +1,4 @@
+import csv
 import gc
 import json
 import logging
@@ -76,6 +77,22 @@ def dump_results(run_dir, label, results):
         json.dump(payload, f, indent=2)
     log.info("wrote results json: %s", path)
     return path
+
+
+def dump_samples_csv(run_dir, label, samples):
+    """Write per-sample benchmark data to `<run_dir>/<slug>_samples.csv`."""
+    if not samples:
+        return None
+    slug = label.lower().replace(" ", "_").replace("(", "").replace(")", "").replace("/", "_")
+    path = os.path.join(run_dir, f"{slug}_samples.csv")
+    fieldnames = list(samples[0].keys())
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(samples)
+    log.info("wrote samples csv: %s (%d rows)", path, len(samples))
+    return path
+
 
 PROMPTS = [
     "Explain the theory of relativity in simple terms.",
@@ -454,10 +471,9 @@ def evaluate_gsm8k(model, tokenizer, questions, max_new_tokens, warmup_runs, dev
     Mirrors the timing structure of benchmark() but formats GSM8K prompts,
     decodes generated text, and scores accuracy via parse_gsm8k_answer().
 
-    Returns the standard 11-key speed dict plus:
-        gsm8k_accuracy: float (0.0 to 1.0)
-        gsm8k_correct: int
-        gsm8k_total: int
+    Returns a tuple of (aggregated_results_dict, per_sample_list).
+    The aggregated dict contains speed/accuracy metrics.
+    The per-sample list has one dict per question with individual timings.
     """
     raw_prompts = [GSM8K_INSTRUCTION + q["question"] for q in questions]
     prompts = format_prompts(tokenizer, raw_prompts)
@@ -483,6 +499,7 @@ def evaluate_gsm8k(model, tokenizer, questions, max_new_tokens, warmup_runs, dev
     all_tpot = []
     all_tokens = []
     all_prompt_lens = []
+    samples = []
     tpot_skipped = 0
     correct = 0
 
@@ -510,7 +527,8 @@ def evaluate_gsm8k(model, tokenizer, questions, max_new_tokens, warmup_runs, dev
         model_output = tokenizer.decode(new_token_ids, skip_special_tokens=True)
 
         predicted = parse_gsm8k_answer(model_output)
-        if predicted is not None and abs(predicted - item["answer"]) < 1e-3:
+        is_correct = predicted is not None and abs(predicted - item["answer"]) < 1e-3
+        if is_correct:
             correct += 1
 
         # Timing (identical to benchmark())
@@ -518,26 +536,42 @@ def evaluate_gsm8k(model, tokenizer, questions, max_new_tokens, warmup_runs, dev
         latency = t_end - t_start
         ttft = (streamer.first_token_time - t_start) if streamer.first_token_time else latency
 
-        all_ttft.append(ttft * 1000)
-        all_latency.append(latency * 1000)
+        ttft_ms = ttft * 1000
+        latency_ms = latency * 1000
+        all_ttft.append(ttft_ms)
+        all_latency.append(latency_ms)
         all_tokens.append(new_tokens)
 
         if new_tokens < 2:
             tpot_skipped += 1
+            tpot_ms = float("nan")
             log.warning(
                 "skipped TPOT for prompt index %d (only %d token(s) generated)",
                 idx, new_tokens,
             )
-            continue
+        else:
+            decode_tokens = new_tokens - 1
+            decode_time = latency - ttft
+            tpot_ms = (decode_time / decode_tokens) * 1000
+            all_tpot.append(tpot_ms)
 
-        decode_tokens = new_tokens - 1
-        decode_time = latency - ttft
-        all_tpot.append((decode_time / decode_tokens) * 1000)
+        samples.append({
+            "sample_idx": idx,
+            "question": item["question"][:100],
+            "expected": item["answer"],
+            "predicted": predicted,
+            "correct": is_correct,
+            "prompt_len": input_len,
+            "output_len": new_tokens,
+            "ttft_ms": round(ttft_ms, 3),
+            "tpot_ms": round(tpot_ms, 3) if not math.isnan(tpot_ms) else "",
+            "latency_ms": round(latency_ms, 3),
+        })
 
     total_tokens = sum(all_tokens)
     total_time = sum(all_latency) / 1000
 
-    return {
+    aggregated = {
         "throughput_tok_s": total_tokens / total_time,
         "ttft_mean_ms": mean(all_ttft),
         "ttft_std_ms": stdev(all_ttft) if len(all_ttft) > 1 else 0,
@@ -555,6 +589,7 @@ def evaluate_gsm8k(model, tokenizer, questions, max_new_tokens, warmup_runs, dev
         "gsm8k_correct": correct,
         "gsm8k_total": len(questions),
     }
+    return aggregated, samples
 
 
 def print_results(label, r):
@@ -751,13 +786,15 @@ def evaluate_gsm8k_mlx(model, tokenizer, questions, max_new_tokens, warmup_runs)
     all_tpot = []
     all_tokens = []
     all_prompt_lens = []
+    samples = []
     tpot_skipped = 0
     correct = 0
 
     for idx, (prompt, item) in enumerate(zip(prompts, questions)):
         # Estimate prompt length by tokenizing (mlx tokenizers support encode)
         prompt_tokens = tokenizer.encode(prompt)
-        all_prompt_lens.append(len(prompt_tokens))
+        prompt_len = len(prompt_tokens)
+        all_prompt_lens.append(prompt_len)
 
         t_start = time.perf_counter()
         first_token = None
@@ -781,7 +818,8 @@ def evaluate_gsm8k_mlx(model, tokenizer, questions, max_new_tokens, warmup_runs)
         model_output = output_chunks[-1] if output_chunks else ""
 
         predicted = parse_gsm8k_answer(model_output)
-        if predicted is not None and abs(predicted - item["answer"]) < 1e-3:
+        is_correct = predicted is not None and abs(predicted - item["answer"]) < 1e-3
+        if is_correct:
             correct += 1
 
         new_tokens = final_gen_tokens
@@ -794,19 +832,33 @@ def evaluate_gsm8k_mlx(model, tokenizer, questions, max_new_tokens, warmup_runs)
 
         if new_tokens < 2:
             tpot_skipped += 1
+            tpot_ms = float("nan")
             log.warning(
                 "skipped TPOT for prompt index %d (only %d token(s) generated)",
                 idx, new_tokens,
             )
-            continue
+        else:
+            decode_time_ms = latency_ms - ttft_ms
+            tpot_ms = decode_time_ms / (new_tokens - 1)
+            all_tpot.append(tpot_ms)
 
-        decode_time_ms = latency_ms - ttft_ms
-        all_tpot.append(decode_time_ms / (new_tokens - 1))
+        samples.append({
+            "sample_idx": idx,
+            "question": item["question"][:100],
+            "expected": item["answer"],
+            "predicted": predicted,
+            "correct": is_correct,
+            "prompt_len": prompt_len,
+            "output_len": new_tokens,
+            "ttft_ms": round(ttft_ms, 3),
+            "tpot_ms": round(tpot_ms, 3) if not math.isnan(tpot_ms) else "",
+            "latency_ms": round(latency_ms, 3),
+        })
 
     total_tokens = sum(all_tokens)
     total_time_s = sum(all_latency) / 1000
 
-    return {
+    aggregated = {
         "throughput_tok_s": total_tokens / total_time_s,
         "ttft_mean_ms": mean(all_ttft),
         "ttft_std_ms": stdev(all_ttft) if len(all_ttft) > 1 else 0,
@@ -824,3 +876,4 @@ def evaluate_gsm8k_mlx(model, tokenizer, questions, max_new_tokens, warmup_runs)
         "gsm8k_correct": correct,
         "gsm8k_total": len(questions),
     }
+    return aggregated, samples

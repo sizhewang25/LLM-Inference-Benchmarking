@@ -10,6 +10,7 @@ from gptqmodel.quantization import GGUFConfig
 from bench_utils import (
     compute_perplexity,
     dump_results,
+    dump_samples_csv,
     evaluate_gsm8k,
     free_memory,
     get_peak_memory_mb,
@@ -88,7 +89,7 @@ def benchmark_model_pair(run_dir, config, gsm8k_questions, gguf_backend):
 
     log.info("evaluating GSM8K (FP16)...")
     reset_peak_memory(device)
-    fp16_results = evaluate_gsm8k(fp16_model, tokenizer, gsm8k_questions, gsm8k_max_tokens, warmup_runs, device)
+    fp16_results, fp16_samples = evaluate_gsm8k(fp16_model, tokenizer, gsm8k_questions, gsm8k_max_tokens, warmup_runs, device)
     fp16_results["weight_mem_mb"] = weight_mem
     fp16_results["runtime_mem_mb"] = max(0, fp16_results["peak_mem_mb"] - weight_mem)
     log.info("FP16 GSM8K accuracy: %.1f%%", fp16_results["gsm8k_accuracy"] * 100)
@@ -101,6 +102,7 @@ def benchmark_model_pair(run_dir, config, gsm8k_questions, gguf_backend):
     fp16_label = f"FP16 ({model_name})"
     print_results(fp16_label, fp16_results)
     dump_results(run_dir, fp16_label, fp16_results)
+    dump_samples_csv(run_dir, fp16_label, fp16_samples)
 
     del fp16_model
     free_memory()
@@ -140,7 +142,7 @@ def benchmark_model_pair(run_dir, config, gsm8k_questions, gguf_backend):
 
     log.info("evaluating GSM8K (GGUF %s)...", gguf_format)
     reset_peak_memory(device)
-    quant_results = evaluate_gsm8k(quant_model, quant_tokenizer, gsm8k_questions, gsm8k_max_tokens, warmup_runs, device)
+    quant_results, quant_samples = evaluate_gsm8k(quant_model, quant_tokenizer, gsm8k_questions, gsm8k_max_tokens, warmup_runs, device)
     quant_results["weight_mem_mb"] = quant_weight_mem
     quant_results["runtime_mem_mb"] = max(0, quant_results["peak_mem_mb"] - quant_weight_mem)
     log.info("GGUF GSM8K accuracy: %.1f%%", quant_results["gsm8k_accuracy"] * 100)
@@ -153,6 +155,7 @@ def benchmark_model_pair(run_dir, config, gsm8k_questions, gguf_backend):
     quant_label = f"GGUF {gguf_format} ({model_name})"
     print_results(quant_label, quant_results)
     dump_results(run_dir, quant_label, quant_results)
+    dump_samples_csv(run_dir, quant_label, quant_samples)
 
     del quant_model
     free_memory()

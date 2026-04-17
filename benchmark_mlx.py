@@ -4,6 +4,7 @@ import time
 from bench_utils import (
     compute_perplexity_mlx,
     dump_results,
+    dump_samples_csv,
     evaluate_gsm8k_mlx,
     free_memory,
     load_gsm8k_questions,
@@ -73,7 +74,7 @@ def benchmark_model_pair(run_dir, config, gsm8k_questions):
 
     log.info("evaluating GSM8K (FP16 MLX)...")
     mx.reset_peak_memory()
-    fp16_results = evaluate_gsm8k_mlx(
+    fp16_results, fp16_samples = evaluate_gsm8k_mlx(
         fp16_model, fp16_tokenizer, gsm8k_questions, gsm8k_max_tokens, warmup_runs
     )
     fp16_results["weight_mem_mb"] = weight_mem
@@ -88,6 +89,7 @@ def benchmark_model_pair(run_dir, config, gsm8k_questions):
     fp16_label = f"FP16 MLX ({model_name})"
     print_results(fp16_label, fp16_results)
     dump_results(run_dir, fp16_label, fp16_results)
+    dump_samples_csv(run_dir, fp16_label, fp16_samples)
 
     del fp16_model, fp16_tokenizer
     free_memory()
@@ -103,7 +105,7 @@ def benchmark_model_pair(run_dir, config, gsm8k_questions):
 
     log.info("evaluating GSM8K (MLX 4-bit)...")
     mx.reset_peak_memory()
-    quant_results = evaluate_gsm8k_mlx(
+    quant_results, quant_samples = evaluate_gsm8k_mlx(
         quant_model, quant_tokenizer, gsm8k_questions, gsm8k_max_tokens, warmup_runs
     )
     quant_results["weight_mem_mb"] = quant_weight_mem
@@ -118,6 +120,7 @@ def benchmark_model_pair(run_dir, config, gsm8k_questions):
     quant_label = f"MLX 4-bit ({model_name})"
     print_results(quant_label, quant_results)
     dump_results(run_dir, quant_label, quant_results)
+    dump_samples_csv(run_dir, quant_label, quant_samples)
 
     del quant_model, quant_tokenizer
     free_memory()
