@@ -4,6 +4,7 @@ import sys
 import time
 
 import torch
+import transformers
 from transformers import AutoTokenizer
 
 from gptqmodel import BACKEND, GPTQModel
@@ -26,6 +27,15 @@ from bench_utils import (
 
 log = logging.getLogger("bench")
 
+# Script-level runtime identity — stamped onto every result.
+# Note: gptqmodel is the quant *toolkit* that dispatches kernels; the
+# generation loop itself runs inside HuggingFace transformers, so that's the
+# true `engine`. The kernel field captures gptqmodel's GGUF_TRITON / GGUF_TORCH
+# dispatch choice.
+FRAMEWORK = "PyTorch"
+ENGINE = "transformers"
+ENGINE_VERSION = transformers.__version__
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 # Flat list: one entry per benchmark run. FP16 baselines are peers with GGUF
 # variants — no pairing, no duplication when a base model has multiple quants.
@@ -34,11 +44,15 @@ RUN_CONFIGS = [
     {
         "name": "Qwen2.5-7B-Instruct",
         "variant": "FP16",
+        "quant_bits": 16,
         "model_id": "Qwen/Qwen2.5-7B-Instruct",
     },
     {
         "name": "Qwen2.5-7B-Instruct",
         "variant": "GGUF Q4_K_M",
+        "quant_method": "k-quant",
+        "quant_bits": 4,
+        "quant_format": "Q4_K_M",
         "model_id": "models/Qwen2.5-7B-Instruct-GGUF-Q4_K_M",
         "gguf_format": "q4_k_m",
         "source_fp16": "Qwen/Qwen2.5-7B-Instruct",
@@ -46,6 +60,9 @@ RUN_CONFIGS = [
     {
         "name": "Qwen2.5-7B-Instruct",
         "variant": "GGUF Q2_K",
+        "quant_method": "k-quant",
+        "quant_bits": 2,
+        "quant_format": "Q2_K",
         "model_id": "models/Qwen2.5-7B-Instruct-GGUF-Q2_K",
         "gguf_format": "q2_k",
         "source_fp16": "Qwen/Qwen2.5-7B-Instruct",
@@ -55,11 +72,15 @@ RUN_CONFIGS = [
     {
         "name": "Llama-3.1-8B-Instruct",
         "variant": "FP16",
+        "quant_bits": 16,
         "model_id": "meta-llama/Llama-3.1-8B-Instruct",
     },
     {
         "name": "Llama-3.1-8B-Instruct",
         "variant": "GGUF Q4_K_M",
+        "quant_method": "k-quant",
+        "quant_bits": 4,
+        "quant_format": "Q4_K_M",
         "model_id": "models/Llama-3.1-8B-Instruct-GGUF-Q4_K_M",
         "gguf_format": "q4_k_m",
         "source_fp16": "meta-llama/Llama-3.1-8B-Instruct",
@@ -67,6 +88,9 @@ RUN_CONFIGS = [
     {
         "name": "Llama-3.1-8B-Instruct",
         "variant": "GGUF Q2_K",
+        "quant_method": "k-quant",
+        "quant_bits": 2,
+        "quant_format": "Q2_K",
         "model_id": "models/Llama-3.1-8B-Instruct-GGUF-Q2_K",
         "gguf_format": "q2_k",
         "source_fp16": "meta-llama/Llama-3.1-8B-Instruct",
@@ -76,11 +100,15 @@ RUN_CONFIGS = [
     {
         "name": "Gemma-2-9B-it",
         "variant": "FP16",
+        "quant_bits": 16,
         "model_id": "google/gemma-2-9b-it",
     },
     {
         "name": "Gemma-2-9B-it",
         "variant": "GGUF Q4_K_M",
+        "quant_method": "k-quant",
+        "quant_bits": 4,
+        "quant_format": "Q4_K_M",
         "model_id": "models/Gemma-2-9B-it-GGUF-Q4_K_M",
         "gguf_format": "q4_k_m",
         "source_fp16": "google/gemma-2-9b-it",
@@ -88,6 +116,9 @@ RUN_CONFIGS = [
     {
         "name": "Gemma-2-9B-it",
         "variant": "GGUF Q2_K",
+        "quant_method": "k-quant",
+        "quant_bits": 2,
+        "quant_format": "Q2_K",
         "model_id": "models/Gemma-2-9B-it-GGUF-Q2_K",
         "gguf_format": "q2_k",
         "source_fp16": "google/gemma-2-9b-it",
@@ -173,7 +204,21 @@ def benchmark_run(run_dir, config, gsm8k_questions, gguf_backend):
         results["perplexity"] = compute_perplexity(model, wikitext_tokens, device)
         log.info("perplexity: %.2f", results["perplexity"])
 
-        return finalize_result(run_dir, label, results, samples, name, variant, weight_mem)
+        if is_gguf:
+            kernel = "triton" if gguf_backend == BACKEND.GGUF_TRITON else "torch"
+        else:
+            kernel = "torch"  # FP16 baseline: stock PyTorch matmul via GPTQModel.load
+
+        return finalize_result(
+            run_dir, label, results, samples, name, variant, weight_mem,
+            framework=FRAMEWORK,
+            engine=ENGINE,
+            engine_version=ENGINE_VERSION,
+            quant_method=config.get("quant_method"),
+            quant_bits=config.get("quant_bits"),
+            quant_format=config.get("quant_format"),
+            kernel=kernel,
+        )
     except torch.cuda.OutOfMemoryError as e:
         log.warning("run failed (CUDA OOM): %s — skipping", e)
         return None

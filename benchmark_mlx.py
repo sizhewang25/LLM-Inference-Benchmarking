@@ -24,7 +24,17 @@ except ImportError as exc:
         "mlx-lm is required. Install with: pip install mlx-lm"
     ) from exc
 
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
 log = logging.getLogger("bench")
+
+# Script-level runtime identity — stamped onto every result.
+FRAMEWORK = "MLX"
+ENGINE = "mlx-lm"
+try:
+    ENGINE_VERSION = _pkg_version("mlx-lm")
+except PackageNotFoundError:
+    ENGINE_VERSION = None
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 # Flat list: one entry per benchmark run. FP16 baselines are peers with quant
@@ -34,19 +44,24 @@ RUN_CONFIGS = [
     {
         "name": "Qwen2.5-7B-Instruct",
         "variant": "FP16",
+        "quant_bits": 16,
         "model_id": "Qwen/Qwen2.5-7B-Instruct",
     },
     {
         "name": "Qwen2.5-7B-Instruct",
         "variant": "MLX 4-bit",
-        "model_id": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+        "quant_method": "affine",
         "quant_bits": 4,
+        "quant_format": "affine-gs64",
+        "model_id": "mlx-community/Qwen2.5-7B-Instruct-4bit",
     },
     {
         "name": "Qwen2.5-7B-Instruct",
         "variant": "MLX 2-bit",
-        "model_id": "models/Qwen2.5-7B-Instruct-mlx-2bit",
+        "quant_method": "affine",
         "quant_bits": 2,
+        "quant_format": "affine-gs64",
+        "model_id": "models/Qwen2.5-7B-Instruct-mlx-2bit",
         "source_fp16": "Qwen/Qwen2.5-7B-Instruct",
     },
 
@@ -54,19 +69,24 @@ RUN_CONFIGS = [
     {
         "name": "Llama-3.1-8B-Instruct",
         "variant": "FP16",
+        "quant_bits": 16,
         "model_id": "meta-llama/Llama-3.1-8B-Instruct",
     },
     {
         "name": "Llama-3.1-8B-Instruct",
         "variant": "MLX 4-bit",
-        "model_id": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
+        "quant_method": "affine",
         "quant_bits": 4,
+        "quant_format": "affine-gs64",
+        "model_id": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
     },
     {
         "name": "Llama-3.1-8B-Instruct",
         "variant": "MLX 2-bit",
-        "model_id": "models/Llama-3.1-8B-Instruct-mlx-2bit",
+        "quant_method": "affine",
         "quant_bits": 2,
+        "quant_format": "affine-gs64",
+        "model_id": "models/Llama-3.1-8B-Instruct-mlx-2bit",
         "source_fp16": "meta-llama/Llama-3.1-8B-Instruct",
     },
 
@@ -74,19 +94,24 @@ RUN_CONFIGS = [
     {
         "name": "Gemma-2-9B-it",
         "variant": "FP16",
+        "quant_bits": 16,
         "model_id": "google/gemma-2-9b-it",
     },
     {
         "name": "Gemma-2-9B-it",
         "variant": "MLX 4-bit",
-        "model_id": "mlx-community/gemma-2-9b-it-4bit",
+        "quant_method": "affine",
         "quant_bits": 4,
+        "quant_format": "affine-gs64",
+        "model_id": "mlx-community/gemma-2-9b-it-4bit",
     },
     {
         "name": "Gemma-2-9B-it",
         "variant": "MLX 2-bit",
-        "model_id": "models/Gemma-2-9B-it-mlx-2bit",
+        "quant_method": "affine",
         "quant_bits": 2,
+        "quant_format": "affine-gs64",
+        "model_id": "models/Gemma-2-9B-it-mlx-2bit",
         "source_fp16": "google/gemma-2-9b-it",
     },
 ]
@@ -126,7 +151,7 @@ def benchmark_run(run_dir, config, gsm8k_questions):
     log.info("RUN: %s", label)
     log.info("=" * 60)
 
-    if "quant_bits" in config and model_id.startswith(("models/", "/", ".")):
+    if config.get("source_fp16") and model_id.startswith(("models/", "/", ".")):
         _ensure_local_quant(model_id, config["source_fp16"], config["quant_bits"])
 
     model = tokenizer = None
@@ -151,7 +176,16 @@ def benchmark_run(run_dir, config, gsm8k_questions):
         results["perplexity"] = compute_perplexity_mlx(model, wikitext_tokens)
         log.info("perplexity: %.2f", results["perplexity"])
 
-        return finalize_result(run_dir, label, results, samples, name, variant, weight_mem)
+        return finalize_result(
+            run_dir, label, results, samples, name, variant, weight_mem,
+            framework=FRAMEWORK,
+            engine=ENGINE,
+            engine_version=ENGINE_VERSION,
+            quant_method=config.get("quant_method"),
+            quant_bits=config.get("quant_bits"),
+            quant_format=config.get("quant_format"),  # e.g. "affine-gs64" (MLX has no GGUF-style preset names)
+            kernel="mlx",                              # mlx_lm's built-in matmul/dequant path
+        )
     except Exception as e:
         log.warning("run failed (likely OOM): %s — skipping", e)
         return None

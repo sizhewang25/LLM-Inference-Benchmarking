@@ -654,21 +654,46 @@ def print_results(label, r):
     log.info("\n".join(lines))
 
 
-def finalize_result(run_dir, label, results, samples, name, variant, weight_mem_mb):
-    """Attach memory metadata, persist per-run JSON + samples CSV, log the
-    formatted summary, and return the augmented row ready for aggregation.
+def finalize_result(
+    run_dir, label, results, samples, name, variant, weight_mem_mb,
+    framework=None, engine=None, engine_version=None,
+    quant_method=None, quant_bits=None, quant_format=None, kernel=None,
+):
+    """Attach memory + identity metadata, persist per-run JSON + samples CSV,
+    log the formatted summary, and return the augmented row ready for
+    aggregation.
 
-    Shared by the per-framework `benchmark_run` functions so the bookkeeping
-    around each eval (weight/runtime split, file output, name/variant tags)
-    stays in one place.
+    Identity fields are stamped *before* dump_results so the on-disk JSON
+    carries them (previous versions only had `label`, forcing downstream code
+    to regex-parse it).
+
+    Identity axes (replaces the legacy monolithic `variant` string):
+      framework      — foundational ML library: "PyTorch", "MLX", "ggml"
+      engine         — inference runtime / generation-loop orchestrator:
+                       "mlx-lm", "transformers", "llama.cpp", "vLLM", ...
+      engine_version — version string of that runtime (reproducibility)
+      quant_method   — algorithm family: "affine" (MLX), "k-quant" (GGUF),
+                       None for FP16 baselines
+      quant_bits     — 16 / 4 / 2
+      quant_format   — on-disk layout disambiguating siblings of a method:
+                       "affine-gs64", "Q4_K_M", "Q2_K", None
+      kernel         — matmul kernel actually dispatched at inference time:
+                       "mlx", "triton", "torch"
     """
     results["weight_mem_mb"] = weight_mem_mb
     results["runtime_mem_mb"] = max(0, results["peak_mem_mb"] - weight_mem_mb)
+    results["name"] = name
+    results["variant"] = variant
+    results["framework"] = framework
+    results["engine"] = engine
+    results["engine_version"] = engine_version
+    results["quant_method"] = quant_method
+    results["quant_bits"] = quant_bits
+    results["quant_format"] = quant_format
+    results["kernel"] = kernel
     print_results(label, results)
     dump_results(run_dir, label, results)
     dump_samples_csv(run_dir, label, samples)
-    results["name"] = name
-    results["variant"] = variant
     return results
 
 
