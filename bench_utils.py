@@ -464,9 +464,14 @@ def benchmark(model, tokenizer, prompts, max_new_tokens, warmup_runs, device):
 
     total_tokens = sum(all_tokens)
     total_time = sum(all_latency) / 1000
+    per_sample_tps = [
+        tok / (lat / 1000) for tok, lat in zip(all_tokens, all_latency) if tok > 0 and lat > 0
+    ]
 
     return {
         "throughput_tok_s": total_tokens / total_time,
+        "throughput_mean_tok_s": mean(per_sample_tps) if per_sample_tps else 0,
+        "throughput_std_tok_s": stdev(per_sample_tps) if len(per_sample_tps) > 1 else 0,
         "ttft_mean_ms": mean(all_ttft),
         "ttft_std_ms": stdev(all_ttft) if len(all_ttft) > 1 else 0,
         "latency_mean_ms": mean(all_latency),
@@ -585,9 +590,14 @@ def evaluate_gsm8k(model, tokenizer, questions, max_new_tokens, warmup_runs, dev
 
     total_tokens = sum(all_tokens)
     total_time = sum(all_latency) / 1000
+    per_sample_tps = [
+        tok / (lat / 1000) for tok, lat in zip(all_tokens, all_latency) if tok > 0 and lat > 0
+    ]
 
     aggregated = {
         "throughput_tok_s": total_tokens / total_time,
+        "throughput_mean_tok_s": mean(per_sample_tps) if per_sample_tps else 0,
+        "throughput_std_tok_s": stdev(per_sample_tps) if len(per_sample_tps) > 1 else 0,
         "ttft_mean_ms": mean(all_ttft),
         "ttft_std_ms": stdev(all_ttft) if len(all_ttft) > 1 else 0,
         "latency_mean_ms": mean(all_latency),
@@ -599,7 +609,9 @@ def evaluate_gsm8k(model, tokenizer, questions, max_new_tokens, warmup_runs, dev
         "num_samples": len(questions),
         "total_tokens": total_tokens,
         "prompt_len_mean": mean(all_prompt_lens),
+        "prompt_len_std": stdev(all_prompt_lens) if len(all_prompt_lens) > 1 else 0,
         "output_len_mean": mean(all_tokens),
+        "output_len_std": stdev(all_tokens) if len(all_tokens) > 1 else 0,
         "gsm8k_accuracy": correct / len(questions),
         "gsm8k_correct": correct,
         "gsm8k_total": len(questions),
@@ -704,7 +716,11 @@ def print_results_table(rows):
         ("GSM8K %",    "gsm8k_accuracy",    8, lambda r: f"{r['gsm8k_accuracy'] * 100:.1f}"),
         ("Samples",    "num_samples",       7, lambda r: f"{r['num_samples']}"),
         ("PPL",        "perplexity",        8, lambda r: f"{r['perplexity']:.2f}"),
-        ("Tok/s",      "throughput_tok_s",  9, lambda r: f"{r['throughput_tok_s']:.2f}"),
+        ("Tok/s",      "throughput_tok_s", 15, lambda r: (
+            _mean_std(r, "throughput_mean_tok_s", "throughput_std_tok_s", 2)
+            if r.get("throughput_mean_tok_s") is not None
+            else f"{r['throughput_tok_s']:.2f}"
+        )),
         ("TTFT ms",    "ttft_mean_ms",     18, lambda r: _mean_std(r, "ttft_mean_ms", "ttft_std_ms", 2)),
         ("TPOT ms",    "tpot_mean_ms",     14, lambda r: _mean_std(r, "tpot_mean_ms", "tpot_std_ms", 2)),
         ("Lat ms",     "latency_mean_ms",  20, lambda r: _mean_std(r, "latency_mean_ms", "latency_std_ms", 2)),
@@ -837,9 +853,14 @@ def benchmark_mlx_model(model, tokenizer, prompts, max_new_tokens, warmup_runs):
 
     total_tokens = sum(all_tokens)
     total_time_s = sum(all_latency) / 1000
+    per_sample_tps = [
+        tok / (lat / 1000) for tok, lat in zip(all_tokens, all_latency) if tok > 0 and lat > 0
+    ]
 
     return {
         "throughput_tok_s": total_tokens / total_time_s,
+        "throughput_mean_tok_s": mean(per_sample_tps) if per_sample_tps else 0,
+        "throughput_std_tok_s": stdev(per_sample_tps) if len(per_sample_tps) > 1 else 0,
         "ttft_mean_ms": mean(all_ttft),
         "ttft_std_ms": stdev(all_ttft) if len(all_ttft) > 1 else 0,
         "latency_mean_ms": mean(all_latency),
@@ -956,9 +977,14 @@ def evaluate_gsm8k_mlx(model, tokenizer, questions, max_new_tokens, warmup_runs)
 
     total_tokens = sum(all_tokens)
     total_time_s = sum(all_latency) / 1000
+    per_sample_tps = [
+        tok / (lat / 1000) for tok, lat in zip(all_tokens, all_latency) if tok > 0 and lat > 0
+    ]
 
     aggregated = {
         "throughput_tok_s": total_tokens / total_time_s,
+        "throughput_mean_tok_s": mean(per_sample_tps) if per_sample_tps else 0,
+        "throughput_std_tok_s": stdev(per_sample_tps) if len(per_sample_tps) > 1 else 0,
         "ttft_mean_ms": mean(all_ttft),
         "ttft_std_ms": stdev(all_ttft) if len(all_ttft) > 1 else 0,
         "latency_mean_ms": mean(all_latency),
@@ -970,7 +996,9 @@ def evaluate_gsm8k_mlx(model, tokenizer, questions, max_new_tokens, warmup_runs)
         "num_samples": len(questions),
         "total_tokens": total_tokens,
         "prompt_len_mean": mean(all_prompt_lens),
+        "prompt_len_std": stdev(all_prompt_lens) if len(all_prompt_lens) > 1 else 0,
         "output_len_mean": mean(all_tokens),
+        "output_len_std": stdev(all_tokens) if len(all_tokens) > 1 else 0,
         "gsm8k_accuracy": correct / len(questions),
         "gsm8k_correct": correct,
         "gsm8k_total": len(questions),

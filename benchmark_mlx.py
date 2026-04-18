@@ -38,12 +38,12 @@ RUN_CONFIGS = [
     #     "variant": "FP16",
     #     "model_id": "Qwen/Qwen2.5-7B-Instruct",
     # },
-    # {
-    #     "name": "Qwen2.5-7B-Instruct",
-    #     "variant": "MLX 4-bit",
-    #     "model_id": "mlx-community/Qwen2.5-7B-Instruct-4bit",
-    #     "quant_bits": 4,
-    # },
+    {
+        "name": "Qwen2.5-7B-Instruct",
+        "variant": "MLX 4-bit",
+        "model_id": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+        "quant_bits": 4,
+    },
     # {
     #     "name": "Qwen2.5-7B-Instruct",
     #     "variant": "MLX 2-bit",
@@ -64,13 +64,13 @@ RUN_CONFIGS = [
     #     "model_id": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
     #     "quant_bits": 4,
     # },
-    {
-        "name": "Llama-3.1-8B-Instruct",
-        "variant": "MLX 2-bit",
-        "model_id": "models/Llama-3.1-8B-Instruct-mlx-2bit",
-        "quant_bits": 2,
-        "source_fp16": "meta-llama/Llama-3.1-8B-Instruct",
-    },
+    # {
+    #     "name": "Llama-3.1-8B-Instruct",
+    #     "variant": "MLX 2-bit",
+    #     "model_id": "models/Llama-3.1-8B-Instruct-mlx-2bit",
+    #     "quant_bits": 2,
+    #     "source_fp16": "meta-llama/Llama-3.1-8B-Instruct",
+    # },
 
     # ── Gemma Family
     # {
@@ -84,13 +84,13 @@ RUN_CONFIGS = [
     #     "model_id": "mlx-community/gemma-2-9b-it-4bit",
     #     "quant_bits": 4,
     # },
-    {
-        "name": "Gemma-2-9B-it",
-        "variant": "MLX 2-bit",
-        "model_id": "models/Gemma-2-9B-it-mlx-2bit",
-        "quant_bits": 2,
-        "source_fp16": "google/gemma-2-9b-it",
-    },
+    # {
+    #     "name": "Gemma-2-9B-it",
+    #     "variant": "MLX 2-bit",
+    #     "model_id": "models/Gemma-2-9B-it-mlx-2bit",
+    #     "quant_bits": 2,
+    #     "source_fp16": "google/gemma-2-9b-it",
+    # },
 ]
 
 gsm8k_samples    = 10
