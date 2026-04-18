@@ -713,8 +713,8 @@ def print_results_table(rows):
     cols = [
         ("Model",      "name",             24, None),
         ("Variant",    "variant",          10, None),
-        ("GSM8K %",    "gsm8k_accuracy",    8, lambda r: f"{r['gsm8k_accuracy'] * 100:.1f}"),
-        ("Samples",    "num_samples",       7, lambda r: f"{r['num_samples']}"),
+        ("GSM8K #",    "num_samples",       7, lambda r: f"{r['num_samples']}"),
+        ("Accuracy %",    "gsm8k_accuracy",    8, lambda r: f"{r['gsm8k_accuracy'] * 100:.1f}"),
         ("PPL",        "perplexity",        8, lambda r: f"{r['perplexity']:.2f}"),
         ("Tok/s",      "throughput_tok_s", 15, lambda r: (
             _mean_std(r, "throughput_mean_tok_s", "throughput_std_tok_s", 2)
@@ -751,6 +751,85 @@ def print_results_table(rows):
     for row in rows:
         lines.append("  ".join(cell(row, k, w, f) for _, k, w, f in cols))
     lines.append("=" * total_width)
+    log.info("\n".join(lines))
+
+
+def print_latex_table(rows, caption=None, label=None):
+    """Log a LaTeX (booktabs) summary table mirroring print_results_table().
+
+    Output is a `tabular` environment ready to paste into a paper. Mean ± std
+    columns render as `$m \\pm s$` in inline math. `%`, `_`, `&`, `#` in text
+    cells are escaped. Missing values render as `--`.
+
+    If `caption` or `label` is provided, the tabular is wrapped in a `table`
+    float. Requires `\\usepackage{booktabs}` in the LaTeX preamble.
+    """
+    if not rows:
+        log.info("no results to tabulate")
+        return
+
+    def esc(s):
+        s = str(s)
+        for ch, rep in (("\\", r"\textbackslash{}"), ("&", r"\&"), ("%", r"\%"),
+                        ("#", r"\#"), ("_", r"\_"), ("$", r"\$")):
+            s = s.replace(ch, rep)
+        return s
+
+    def _mean_std_tex(row, mean_key, std_key, digits):
+        std = row.get(std_key)
+        if std is None:
+            return f"${row[mean_key]:.{digits}f}$"
+        return f"${row[mean_key]:.{digits}f} \\pm {std:.{digits}f}$"
+
+    # (header, key, align, formatter). Columns mirror print_results_table.
+    cols = [
+        ("Model",        "name",             "l", lambda r: esc(r["name"])),
+        ("Variant",      "variant",          "l", lambda r: esc(r["variant"])),
+        ("GSM8K \\#",    "num_samples",      "r", lambda r: f"{r['num_samples']}"),
+        ("Accuracy \\%", "gsm8k_accuracy",   "r", lambda r: f"{r['gsm8k_accuracy'] * 100:.1f}"),
+        ("PPL",          "perplexity",       "r", lambda r: f"{r['perplexity']:.2f}"),
+        ("Tok/s",        "throughput_tok_s", "r", lambda r: (
+            _mean_std_tex(r, "throughput_mean_tok_s", "throughput_std_tok_s", 2)
+            if r.get("throughput_mean_tok_s") is not None
+            else f"{r['throughput_tok_s']:.2f}"
+        )),
+        ("TTFT (ms)",    "ttft_mean_ms",     "r", lambda r: _mean_std_tex(r, "ttft_mean_ms", "ttft_std_ms", 2)),
+        ("TPOT (ms)",    "tpot_mean_ms",     "r", lambda r: _mean_std_tex(r, "tpot_mean_ms", "tpot_std_ms", 2)),
+        ("Lat (ms)",     "latency_mean_ms",  "r", lambda r: _mean_std_tex(r, "latency_mean_ms", "latency_std_ms", 2)),
+        ("Weight MB",    "weight_mem_mb",    "r", lambda r: f"{r['weight_mem_mb']:.1f}"),
+        ("Runtime MB",   "runtime_mem_mb",   "r", lambda r: f"{r['runtime_mem_mb']:.1f}"),
+        ("Peak MB",      "peak_mem_mb",      "r", lambda r: f"{r['peak_mem_mb']:.1f}"),
+    ]
+
+    def cell(row, key, formatter):
+        return "--" if row.get(key) is None else formatter(row)
+
+    alignment = " ".join(a for _, _, a, _ in cols)
+    header_line = " & ".join(h for h, _, _, _ in cols) + r" \\"
+    body_lines = [
+        " & ".join(cell(row, k, f) for _, k, _, f in cols) + r" \\"
+        for row in rows
+    ]
+
+    lines = []
+    wrap_float = caption is not None or label is not None
+    if wrap_float:
+        lines.append(r"\begin{table}[h]")
+        lines.append(r"\centering")
+    lines.append(r"\begin{tabular}{" + alignment + "}")
+    lines.append(r"\toprule")
+    lines.append(header_line)
+    lines.append(r"\midrule")
+    lines.extend(body_lines)
+    lines.append(r"\bottomrule")
+    lines.append(r"\end{tabular}")
+    if caption is not None:
+        lines.append(r"\caption{" + caption + "}")
+    if label is not None:
+        lines.append(r"\label{" + label + "}")
+    if wrap_float:
+        lines.append(r"\end{table}")
+
     log.info("\n".join(lines))
 
 
