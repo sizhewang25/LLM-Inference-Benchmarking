@@ -287,17 +287,27 @@ def parse_gsm8k_answer(model_output):
     # Priority 1: #### pattern
     match = re.search(r"####\s*([+-]?[\d,]+\.?\d*)", model_output)
     if match:
-        return float(match.group(1).replace(",", ""))
+        try:
+            return float(match.group(1).replace(",", ""))
+        except ValueError:
+            pass
 
     # Priority 2: \boxed{} pattern
     match = re.search(r"\\boxed\{([+-]?[\d,]+\.?\d*)\}", model_output)
     if match:
-        return float(match.group(1).replace(",", ""))
+        try:
+            return float(match.group(1).replace(",", ""))
+        except ValueError:
+            pass
 
-    # Priority 3: last number in text
-    numbers = re.findall(r"[+-]?[\d,]+\.?\d*", model_output)
-    if numbers:
-        return float(numbers[-1].replace(",", ""))
+    # Priority 3: last number in text — iterate so a malformed trailing
+    # match (e.g. a bare comma from a garbage-emitting quantized model)
+    # falls through to the previous number instead of crashing the run.
+    for num in reversed(re.findall(r"[+-]?[\d,]+\.?\d*", model_output)):
+        try:
+            return float(num.replace(",", ""))
+        except ValueError:
+            continue
 
     return None
 
@@ -666,6 +676,82 @@ def print_comparison(label_a, results_a, label_b, results_b):
         "=" * 60,
     ]
     log.info("\n".join(lines))
+
+
+def print_results_table(rows):
+    """Log an aligned KPI summary table across N benchmark runs.
+
+    Each row is a result dict that must include `name` and `variant` (added by
+    the caller) plus whatever numeric stats the evaluator produced. Missing
+    values render as "—".
+    """
+    if not rows:
+        log.info("no results to tabulate")
+        return
+
+    # (header, key, width, formatter). formatter=None → left-aligned text.
+    cols = [
+        ("Model",      "name",             24, None),
+        ("Variant",    "variant",          10, None),
+        ("GSM8K %",    "gsm8k_accuracy",    8, lambda v: f"{v * 100:.1f}"),
+        ("PPL",        "perplexity",        8, lambda v: f"{v:.2f}"),
+        ("Tok/s",      "throughput_tok_s",  9, lambda v: f"{v:.2f}"),
+        ("TTFT ms",    "ttft_mean_ms",      9, lambda v: f"{v:.2f}"),
+        ("TPOT ms",    "tpot_mean_ms",      9, lambda v: f"{v:.2f}"),
+        ("Lat ms",     "latency_mean_ms",   9, lambda v: f"{v:.2f}"),
+        ("Weight MB",  "weight_mem_mb",    10, lambda v: f"{v:.1f}"),
+        ("Runtime MB", "runtime_mem_mb",   11, lambda v: f"{v:.1f}"),
+        ("Peak MB",    "peak_mem_mb",      10, lambda v: f"{v:.1f}"),
+    ]
+
+    def cell(row, key, width, formatter):
+        v = row.get(key)
+        if v is None:
+            return f"{'—':>{width}}" if formatter else f"{'—':<{width}}"
+        s = formatter(v) if formatter else str(v)
+        return f"{s:>{width}}" if formatter else f"{s:<{width}}"
+
+    def header_cell(h, width, formatter):
+        return f"{h:>{width}}" if formatter else f"{h:<{width}}"
+
+    header = "  ".join(header_cell(h, w, f) for h, _, w, f in cols)
+    total_width = len(header)
+    lines = [
+        "",
+        "=" * total_width,
+        "  SUMMARY",
+        "=" * total_width,
+        header,
+        "-" * total_width,
+    ]
+    for row in rows:
+        lines.append("  ".join(cell(row, k, w, f) for _, k, w, f in cols))
+    lines.append("=" * total_width)
+    log.info("\n".join(lines))
+
+
+def dump_results_table(run_dir, rows, filename="summary.csv"):
+    """Write all rows as one CSV to `<run_dir>/<filename>` for downstream plotting.
+
+    Fieldnames are `name`, `variant`, then the union of remaining keys across
+    rows in first-seen order. Missing keys in a row become empty cells.
+    """
+    if not rows:
+        return None
+    fieldnames = ["name", "variant"]
+    seen = set(fieldnames)
+    for row in rows:
+        for k in row:
+            if k not in seen:
+                fieldnames.append(k)
+                seen.add(k)
+    path = os.path.join(run_dir, filename)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    log.info("wrote summary csv: %s (%d rows)", path, len(rows))
+    return path
 
 
 def benchmark_mlx_model(model, tokenizer, prompts, max_new_tokens, warmup_runs):
