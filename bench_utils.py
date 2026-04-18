@@ -690,25 +690,33 @@ def print_results_table(rows):
         return
 
     # (header, key, width, formatter). formatter=None → left-aligned text.
+    # `key` is used only as the presence probe (missing → "—"); formatter(row)
+    # can pull any fields it needs, so mean/std pairs can render as "m ± s".
+    def _mean_std(row, mean_key, std_key, digits):
+        std = row.get(std_key)
+        if std is None:
+            return f"{row[mean_key]:.{digits}f}"
+        return f"{row[mean_key]:.{digits}f} ± {std:.{digits}f}"
+
     cols = [
         ("Model",      "name",             24, None),
         ("Variant",    "variant",          10, None),
-        ("GSM8K %",    "gsm8k_accuracy",    8, lambda v: f"{v * 100:.1f}"),
-        ("PPL",        "perplexity",        8, lambda v: f"{v:.2f}"),
-        ("Tok/s",      "throughput_tok_s",  9, lambda v: f"{v:.2f}"),
-        ("TTFT ms",    "ttft_mean_ms",      9, lambda v: f"{v:.2f}"),
-        ("TPOT ms",    "tpot_mean_ms",      9, lambda v: f"{v:.2f}"),
-        ("Lat ms",     "latency_mean_ms",   9, lambda v: f"{v:.2f}"),
-        ("Weight MB",  "weight_mem_mb",    10, lambda v: f"{v:.1f}"),
-        ("Runtime MB", "runtime_mem_mb",   11, lambda v: f"{v:.1f}"),
-        ("Peak MB",    "peak_mem_mb",      10, lambda v: f"{v:.1f}"),
+        ("GSM8K %",    "gsm8k_accuracy",    8, lambda r: f"{r['gsm8k_accuracy'] * 100:.1f}"),
+        ("Samples",    "num_samples",       7, lambda r: f"{r['num_samples']}"),
+        ("PPL",        "perplexity",        8, lambda r: f"{r['perplexity']:.2f}"),
+        ("Tok/s",      "throughput_tok_s",  9, lambda r: f"{r['throughput_tok_s']:.2f}"),
+        ("TTFT ms",    "ttft_mean_ms",     18, lambda r: _mean_std(r, "ttft_mean_ms", "ttft_std_ms", 2)),
+        ("TPOT ms",    "tpot_mean_ms",     14, lambda r: _mean_std(r, "tpot_mean_ms", "tpot_std_ms", 2)),
+        ("Lat ms",     "latency_mean_ms",  20, lambda r: _mean_std(r, "latency_mean_ms", "latency_std_ms", 2)),
+        ("Weight MB",  "weight_mem_mb",    10, lambda r: f"{r['weight_mem_mb']:.1f}"),
+        ("Runtime MB", "runtime_mem_mb",   11, lambda r: f"{r['runtime_mem_mb']:.1f}"),
+        ("Peak MB",    "peak_mem_mb",      10, lambda r: f"{r['peak_mem_mb']:.1f}"),
     ]
 
     def cell(row, key, width, formatter):
-        v = row.get(key)
-        if v is None:
+        if row.get(key) is None:
             return f"{'—':>{width}}" if formatter else f"{'—':<{width}}"
-        s = formatter(v) if formatter else str(v)
+        s = formatter(row) if formatter else str(row[key])
         return f"{s:>{width}}" if formatter else f"{s:<{width}}"
 
     def header_cell(h, width, formatter):

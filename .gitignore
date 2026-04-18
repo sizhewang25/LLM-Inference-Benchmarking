@@ -15,6 +15,7 @@ GPTQModel/
 
 # Benchmark run artifacts
 outputs/
+analysis/comparisons/data/
 
 # Python
 __pycache__/
