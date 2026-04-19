@@ -750,118 +750,159 @@ def print_results_table(rows):
     # (header, key, width, formatter). formatter=None → left-aligned text.
     # `key` is used only as the presence probe (missing → "—"); formatter(row)
     # can pull any fields it needs, so mean/std pairs can render as "m ± s".
-    def _mean_std(row, mean_key, std_key, digits):
+    def _mean_std(row, mean_key, std_key, digits, scale=1.0):
         std = row.get(std_key)
+        mean = row[mean_key] * scale
         if std is None:
-            return f"{row[mean_key]:.{digits}f}"
-        return f"{row[mean_key]:.{digits}f} ± {std:.{digits}f}"
+            return f"{mean:.{digits}f}"
+        return f"{mean:.{digits}f} ± {std * scale:.{digits}f}"
 
+    _strip_it = lambda n: re.sub(r"-(?:Instruct|instruct|it|IT)$", "", n)
+
+    # (header, key, width, align, formatter). align='l' or 'r'.
     cols = [
-        ("Model",      "name",             24, None),
-        ("Variant",    "variant",          10, None),
-        ("GSM8K #",    "num_samples",       7, lambda r: f"{r['num_samples']}"),
-        ("Accuracy %",    "gsm8k_accuracy",    8, lambda r: f"{r['gsm8k_accuracy'] * 100:.1f}"),
-        ("PPL",        "perplexity",        8, lambda r: f"{r['perplexity']:.2f}"),
-        ("Tok/s",      "throughput_tok_s", 15, lambda r: (
-            _mean_std(r, "throughput_mean_tok_s", "throughput_std_tok_s", 2)
+        ("Model",      "name",             20, "l", lambda r: _strip_it(r["name"])),
+        ("Quant.",     "variant",          10, "l", None),
+        ("Acc.",       "gsm8k_accuracy",    6, "r", lambda r: f"{r['gsm8k_accuracy'] * 100:.0f}%"),
+        ("PPL",        "perplexity",        8, "r", lambda r: f"{r['perplexity']:.1f}"),
+        ("Speed (Tok/s)", "throughput_tok_s", 15, "r", lambda r: (
+            _mean_std(r, "throughput_mean_tok_s", "throughput_std_tok_s", 1)
             if r.get("throughput_mean_tok_s") is not None
-            else f"{r['throughput_tok_s']:.2f}"
+            else f"{r['throughput_tok_s']:.1f}"
         )),
-        ("TTFT ms",    "ttft_mean_ms",     18, lambda r: _mean_std(r, "ttft_mean_ms", "ttft_std_ms", 2)),
-        ("TPOT ms",    "tpot_mean_ms",     14, lambda r: _mean_std(r, "tpot_mean_ms", "tpot_std_ms", 2)),
-        ("Lat ms",     "latency_mean_ms",  20, lambda r: _mean_std(r, "latency_mean_ms", "latency_std_ms", 2)),
-        ("Weight MB",  "weight_mem_mb",    10, lambda r: f"{r['weight_mem_mb']:.1f}"),
-        ("Runtime MB", "runtime_mem_mb",   11, lambda r: f"{r['runtime_mem_mb']:.1f}"),
-        ("Peak MB",    "peak_mem_mb",      10, lambda r: f"{r['peak_mem_mb']:.1f}"),
+        ("TTFT (ms)",  "ttft_mean_ms",     18, "r", lambda r: _mean_std(r, "ttft_mean_ms", "ttft_std_ms", 1)),
+        ("TPOT (ms)",  "tpot_mean_ms",     14, "r", lambda r: _mean_std(r, "tpot_mean_ms", "tpot_std_ms", 1)),
+        ("Latency (s)",    "latency_mean_ms",  16, "r", lambda r: _mean_std(r, "latency_mean_ms", "latency_std_ms", 1, scale=1/1000)),
+        ("Weight (GB)", "weight_mem_mb",   11, "r", lambda r: f"{r['weight_mem_mb']/1024:.1f}"),
+        ("Runtime (GB)","runtime_mem_mb",  12, "r", lambda r: f"{r['runtime_mem_mb']/1024:.1f}"),
+        ("Peak (GB)",   "peak_mem_mb",      9, "r", lambda r: f"{r['peak_mem_mb']/1024:.1f}"),
     ]
 
-    def cell(row, key, width, formatter):
+    def cell(row, key, width, align, formatter):
         if row.get(key) is None:
-            return f"{'—':>{width}}" if formatter else f"{'—':<{width}}"
+            return f"{'—':>{width}}" if align == "r" else f"{'—':<{width}}"
         s = formatter(row) if formatter else str(row[key])
-        return f"{s:>{width}}" if formatter else f"{s:<{width}}"
+        return f"{s:>{width}}" if align == "r" else f"{s:<{width}}"
 
-    def header_cell(h, width, formatter):
-        return f"{h:>{width}}" if formatter else f"{h:<{width}}"
+    def header_cell(h, width, align):
+        return f"{h:>{width}}" if align == "r" else f"{h:<{width}}"
 
-    header = "  ".join(header_cell(h, w, f) for h, _, w, f in cols)
-    total_width = len(header)
+    def _split_unit(h):
+        if " (" in h:
+            name, rest = h.split(" (", 1)
+            return name, "(" + rest
+        return h, ""
+
+    header1 = "  ".join(header_cell(_split_unit(h)[0], w, a) for h, _, w, a, _ in cols)
+    header2 = "  ".join(header_cell(_split_unit(h)[1], w, a) for h, _, w, a, _ in cols)
+    total_width = len(header1)
     lines = [
         "",
         "=" * total_width,
-        "  SUMMARY",
+        "  SUMMARY (all models are instruct-tuned; GSM8K n=10)",
         "=" * total_width,
-        header,
+        header1,
+        header2,
         "-" * total_width,
     ]
     for row in rows:
-        lines.append("  ".join(cell(row, k, w, f) for _, k, w, f in cols))
+        lines.append("  ".join(cell(row, k, w, a, f) for _, k, w, a, f in cols))
     lines.append("=" * total_width)
     log.info("\n".join(lines))
 
 
-def print_latex_table(rows, caption=None, label=None):
-    """Log a LaTeX (booktabs) summary table mirroring print_results_table().
+def _tex_esc(s):
+    s = str(s)
+    for ch, rep in (("\\", r"\textbackslash{}"), ("&", r"\&"), ("%", r"\%"),
+                    ("#", r"\#"), ("_", r"\_"), ("$", r"\$")):
+        s = s.replace(ch, rep)
+    return s
 
-    Output is a `tabular` environment ready to paste into a paper. Mean ± std
-    columns render as `$m \\pm s$` in inline math. `%`, `_`, `&`, `#` in text
-    cells are escaped. Missing values render as `--`.
 
-    If `caption` or `label` is provided, the tabular is wrapped in a `table`
-    float. Requires `\\usepackage{booktabs}` in the LaTeX preamble.
+_STRIP_INSTRUCT = re.compile(r"-(?:Instruct|instruct|it|IT)$")
+
+
+def _parse_model_parts(name):
+    """Split '<base>-<params>B[-<suffix>]' into (base, params).
+
+    Examples: 'Qwen2.5-7B-Instruct' -> ('Qwen2.5', '7B');
+              'Gemma-2-9B-it'       -> ('Gemma-2', '9B').
+    """
+    m = re.search(r"-(\d+(?:\.\d+)?B)\b", name)
+    if not m:
+        return _STRIP_INSTRUCT.sub("", name), "?"
+    return name[:m.start()], m.group(1)
+
+
+def assign_config_ids(rows):
+    """Return list of short IDs like ['Q1','Q2','L1',...].
+
+    Letter = first alpha char of `name` (upper). Index resets per letter in
+    order of first appearance across rows.
+    """
+    counts = {}
+    ids = []
+    for r in rows:
+        letter = next((c for c in r["name"] if c.isalpha()), "X").upper()
+        counts[letter] = counts.get(letter, 0) + 1
+        ids.append(f"{letter}{counts[letter]}")
+    return ids
+
+
+def _id_sort_key(rid):
+    """Sort key that orders IDs like G1 < G2 < G10 < L1 < Q1."""
+    m = re.match(r"([A-Za-z]+)(\d+)", rid)
+    return (m.group(1), int(m.group(2))) if m else (rid, 0)
+
+
+def print_latex_legend_table(rows, caption=None, label=None):
+    """Legend table mapping IDs (Q1, L2, G3, ...) to the model configuration.
+
+    Intended to be printed alongside `print_latex_table`, which uses the same
+    IDs to avoid repeating the long model/quant names in every row.
     """
     if not rows:
         log.info("no results to tabulate")
         return
 
-    def esc(s):
-        s = str(s)
-        for ch, rep in (("\\", r"\textbackslash{}"), ("&", r"\&"), ("%", r"\%"),
-                        ("#", r"\#"), ("_", r"\_"), ("$", r"\$")):
-            s = s.replace(ch, rep)
-        return s
+    ids = assign_config_ids(rows)
+    pairs = sorted(zip(ids, rows), key=lambda p: _id_sort_key(p[0]))
+    ids = [p[0] for p in pairs]
+    rows = [p[1] for p in pairs]
 
-    def _mean_std_tex(row, mean_key, std_key, digits):
-        std = row.get(std_key)
-        if std is None:
-            return f"${row[mean_key]:.{digits}f}$"
-        return f"${row[mean_key]:.{digits}f} \\pm {std:.{digits}f}$"
-
-    # (header, key, align, formatter). Columns mirror print_results_table.
     cols = [
-        ("Model",        "name",             "l", lambda r: esc(r["name"])),
-        ("Variant",      "variant",          "l", lambda r: esc(r["variant"])),
-        ("GSM8K \\#",    "num_samples",      "r", lambda r: f"{r['num_samples']}"),
-        ("Accuracy \\%", "gsm8k_accuracy",   "r", lambda r: f"{r['gsm8k_accuracy'] * 100:.1f}"),
-        ("PPL",          "perplexity",       "r", lambda r: f"{r['perplexity']:.2f}"),
-        ("Tok/s",        "throughput_tok_s", "r", lambda r: (
-            _mean_std_tex(r, "throughput_mean_tok_s", "throughput_std_tok_s", 2)
-            if r.get("throughput_mean_tok_s") is not None
-            else f"{r['throughput_tok_s']:.2f}"
-        )),
-        ("TTFT (ms)",    "ttft_mean_ms",     "r", lambda r: _mean_std_tex(r, "ttft_mean_ms", "ttft_std_ms", 2)),
-        ("TPOT (ms)",    "tpot_mean_ms",     "r", lambda r: _mean_std_tex(r, "tpot_mean_ms", "tpot_std_ms", 2)),
-        ("Lat (ms)",     "latency_mean_ms",  "r", lambda r: _mean_std_tex(r, "latency_mean_ms", "latency_std_ms", 2)),
-        ("Weight MB",    "weight_mem_mb",    "r", lambda r: f"{r['weight_mem_mb']:.1f}"),
-        ("Runtime MB",   "runtime_mem_mb",   "r", lambda r: f"{r['runtime_mem_mb']:.1f}"),
-        ("Peak MB",      "peak_mem_mb",      "r", lambda r: f"{r['peak_mem_mb']:.1f}"),
+        ("ID",        "l"),
+        ("Model",     "l"),
+        ("Params",    "r"),
+        ("Framework", "l"),
+        ("Method",    "l"),
+        ("Bits",      "r"),
     ]
+    alignment = " ".join(a for _, a in cols)
+    header_line = " & ".join(h for h, _ in cols) + r" \\"
 
-    def cell(row, key, formatter):
-        return "--" if row.get(key) is None else formatter(row)
-
-    alignment = " ".join(a for _, _, a, _ in cols)
-    header_line = " & ".join(h for h, _, _, _ in cols) + r" \\"
-    body_lines = [
-        " & ".join(cell(row, k, f) for _, k, _, f in cols) + r" \\"
-        for row in rows
-    ]
+    body_lines = []
+    for rid, r in zip(ids, rows):
+        base, params = _parse_model_parts(r["name"])
+        fw = r.get("framework") or "--"
+        method = r.get("quant_method") or ("--" if (r.get("quant_bits") or 16) == 16 else "--")
+        bits = r.get("quant_bits")
+        bits_s = str(bits) if bits is not None else "--"
+        body_lines.append(" & ".join([
+            _tex_esc(rid), _tex_esc(base), _tex_esc(params),
+            _tex_esc(fw), _tex_esc(method), _tex_esc(bits_s),
+        ]) + r" \\")
 
     lines = []
     wrap_float = caption is not None or label is not None
     if wrap_float:
-        lines.append(r"\begin{table}[h]")
+        lines.append(r"\begin{table}[t]")
         lines.append(r"\centering")
+        lines.append(r"\small")
+        if caption is not None:
+            lines.append(r"\caption{" + caption + "}")
+        if label is not None:
+            lines.append(r"\label{" + label + "}")
     lines.append(r"\begin{tabular}{" + alignment + "}")
     lines.append(r"\toprule")
     lines.append(header_line)
@@ -869,12 +910,112 @@ def print_latex_table(rows, caption=None, label=None):
     lines.extend(body_lines)
     lines.append(r"\bottomrule")
     lines.append(r"\end{tabular}")
-    if caption is not None:
-        lines.append(r"\caption{" + caption + "}")
-    if label is not None:
-        lines.append(r"\label{" + label + "}")
     if wrap_float:
         lines.append(r"\end{table}")
+    log.info("\n".join(lines))
+
+
+def print_latex_table(rows, caption=None, label=None):
+    """AAAI-friendly LaTeX results table keyed by short IDs (Q1, L2, G3, ...).
+
+    Pair with `print_latex_legend_table` to produce a compact paper-ready
+    pair: a narrow legend defining each ID, and a wider results table that
+    uses those IDs in lieu of repeating Model + Quant columns.
+
+    Mean ± std columns render as `$m \\pm s$`. `%`, `_`, `&`, `#` in text
+    cells are escaped. Missing values render as `--`. The results table is
+    wrapped in `table*` (spans two columns) with `\\small` and a tight
+    `\\tabcolsep` so the 10 columns fit AAAI's two-column layout. A
+    `\\cmidrule` separates model families. Requires `\\usepackage{booktabs}`.
+    """
+    if not rows:
+        log.info("no results to tabulate")
+        return
+
+    def _mean_std_tex(row, mean_key, std_key, digits, scale=1.0):
+        std = row.get(std_key)
+        mean = row[mean_key] * scale
+        if std is None:
+            return f"${mean:.{digits}f}$"
+        return f"${mean:.{digits}f} \\pm {std * scale:.{digits}f}$"
+
+    ids = assign_config_ids(rows)
+    pairs = sorted(zip(ids, rows), key=lambda p: _id_sort_key(p[0]))
+    ids = [p[0] for p in pairs]
+    rows = [p[1] for p in pairs]
+
+    # (header, align, formatter). ID replaces Model + Quant.
+    cols = [
+        ("ID",            "l", lambda r, i: _tex_esc(i)),
+        ("Acc.",          "r", lambda r, i: f"{r['gsm8k_accuracy'] * 100:.0f}\\%"),
+        ("PPL",           "r", lambda r, i: f"{r['perplexity']:.1f}"),
+        ("Speed (Tok/s)", "r", lambda r, i: (
+            _mean_std_tex(r, "throughput_mean_tok_s", "throughput_std_tok_s", 1)
+            if r.get("throughput_mean_tok_s") is not None
+            else f"{r['throughput_tok_s']:.1f}"
+        )),
+        ("TTFT (ms)",     "r", lambda r, i: _mean_std_tex(r, "ttft_mean_ms", "ttft_std_ms", 1)),
+        ("TPOT (ms)",     "r", lambda r, i: _mean_std_tex(r, "tpot_mean_ms", "tpot_std_ms", 1)),
+        ("Latency (s)",   "r", lambda r, i: _mean_std_tex(r, "latency_mean_ms", "latency_std_ms", 1, scale=1/1000)),
+        ("Weight (GB)",   "r", lambda r, i: f"{r['weight_mem_mb']/1024:.1f}"),
+        ("Runtime (GB)",  "r", lambda r, i: f"{r['runtime_mem_mb']/1024:.1f}"),
+        ("Peak (GB)",     "r", lambda r, i: f"{r['peak_mem_mb']/1024:.1f}"),
+    ]
+
+    def cell(row, rid, key_probe, formatter):
+        # Probe-key heuristic: for metric columns we check the row has the
+        # first numeric field we'll format; "ID" col always renders.
+        if key_probe and row.get(key_probe) is None:
+            return "--"
+        return formatter(row, rid)
+
+    # Map each column to a representative probe key so missing metrics render "--".
+    col_probes = [
+        None, "gsm8k_accuracy", "perplexity", "throughput_tok_s",
+        "ttft_mean_ms", "tpot_mean_ms", "latency_mean_ms",
+        "weight_mem_mb", "runtime_mem_mb", "peak_mem_mb",
+    ]
+
+    def _hdr_tex(h, align):
+        if " (" in h:
+            name, rest = h.split(" (", 1)
+            return f"\\shortstack[{align}]{{{name} \\\\ ({rest}}}"
+        return h
+
+    alignment = " ".join(a for _, a, _ in cols)
+    header_line = " & ".join(_hdr_tex(h, a) for h, a, _ in cols) + r" \\"
+
+    body_lines = []
+    prev_letter = None
+    for rid, r in zip(ids, rows):
+        letter = rid[0]
+        if prev_letter is not None and letter != prev_letter:
+            body_lines.append(f"\\cmidrule(lr){{1-{len(cols)}}}")
+        prev_letter = letter
+        body_lines.append(" & ".join(
+            cell(r, rid, probe, f) for (_, _, f), probe in zip(cols, col_probes)
+        ) + r" \\")
+
+    lines = []
+    wrap_float = caption is not None or label is not None
+    if wrap_float:
+        lines.append(r"\begin{table*}[t]")
+        lines.append(r"\centering")
+        lines.append(r"\small")
+        lines.append(r"\setlength{\tabcolsep}{4pt}")
+        if caption is not None:
+            lines.append(r"\caption{" + caption + "}")
+        if label is not None:
+            lines.append(r"\label{" + label + "}")
+    lines.append(r"\begin{tabular}{" + alignment + "}")
+    lines.append(r"\toprule")
+    lines.append(header_line)
+    lines.append(r"\midrule")
+    lines.extend(body_lines)
+    lines.append(r"\bottomrule")
+    lines.append(r"\end{tabular}")
+    if wrap_float:
+        lines.append(r"\end{table*}")
 
     log.info("\n".join(lines))
 
