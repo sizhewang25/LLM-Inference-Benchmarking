@@ -835,31 +835,40 @@ def _parse_model_parts(name):
 
 
 def assign_config_ids(rows):
-    """Return list of short IDs like ['Q1','Q2','L1',...].
+    """Return list of IDs like ['L-M-16', 'L-M-4', 'G-M-2', ...].
 
-    Letter = first alpha char of `name` (upper). Index resets per letter in
-    order of first appearance across rows.
+    Format: `<model-initial>-<framework-initial>-<bits>`. E.g. Llama on MLX at
+    FP16 → `L-M-16`; Gemma on MLX at 2-bit → `G-M-2`.
     """
-    counts = {}
     ids = []
     for r in rows:
-        letter = next((c for c in r["name"] if c.isalpha()), "X").upper()
-        counts[letter] = counts.get(letter, 0) + 1
-        ids.append(f"{letter}{counts[letter]}")
+        model_letter = next((c for c in r["name"] if c.isalpha()), "X").upper()
+        fw = r.get("framework") or ""
+        fw_letter = (fw[:1] or "X").upper()
+        bits = r.get("quant_bits")
+        bits_s = str(bits) if bits is not None else "?"
+        ids.append(f"{model_letter}-{fw_letter}-{bits_s}")
     return ids
 
 
 def _id_sort_key(rid):
-    """Sort key that orders IDs like G1 < G2 < G10 < L1 < Q1."""
-    m = re.match(r"([A-Za-z]+)(\d+)", rid)
-    return (m.group(1), int(m.group(2))) if m else (rid, 0)
+    """Sort by (model-letter, framework-letter, -bits) — FP16 first within a group."""
+    parts = rid.split("-")
+    if len(parts) >= 3:
+        try:
+            bits = int(parts[2])
+        except ValueError:
+            bits = 0
+        return (parts[0], parts[1], -bits)
+    return (rid, "", 0)
 
 
 def print_latex_legend_table(rows, caption=None, label=None):
-    """Legend table mapping IDs (Q1, L2, G3, ...) to the model configuration.
+    """Legend table mapping IDs (e.g. `L-M-16`) to the model configuration.
 
-    Intended to be printed alongside `print_latex_table`, which uses the same
-    IDs to avoid repeating the long model/quant names in every row.
+    ID convention: `<model-initial>-<framework-initial>-<bits>`. Intended to be
+    printed alongside `print_latex_table`, which uses the same IDs to avoid
+    repeating the long model/quant names in every row.
     """
     if not rows:
         log.info("no results to tabulate")
@@ -916,7 +925,7 @@ def print_latex_legend_table(rows, caption=None, label=None):
 
 
 def print_latex_table(rows, caption=None, label=None):
-    """AAAI-friendly LaTeX results table keyed by short IDs (Q1, L2, G3, ...).
+    """AAAI-friendly LaTeX results table keyed by short IDs (e.g. `L-M-16`).
 
     Pair with `print_latex_legend_table` to produce a compact paper-ready
     pair: a narrow legend defining each ID, and a wider results table that
