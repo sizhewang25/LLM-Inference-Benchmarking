@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
 import logging
 import math
 import statistics
@@ -37,6 +38,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import mlx.core as mx
@@ -96,7 +98,8 @@ def _sync() -> None:
 
 
 def _weight_mem_gib() -> float:
-    return mx.get_peak_memory() / 1024**3
+    """Active (live) memory right after model load — reflects weight footprint."""
+    return mx.get_active_memory() / 1024**3
 
 
 def _peak_mem_gib() -> float:
@@ -130,6 +133,7 @@ def _free_model(*models) -> None:
     for _ in models:
         pass  # names go out of scope in caller; keep signature parity with GGUF script
     gc.collect()
+    mx.clear_cache()  # release MLX's Metal buffer pool back to the OS
 
 
 # ── result containers ────────────────────────────────────────────────────────
@@ -552,6 +556,49 @@ def _write_tex(run_dir: str | None, filename: str, content: str) -> None:
     log.info(f"  wrote {out_path}")
 
 
+def _dump_variant_json(
+    run_dir: str | None,
+    model_name: str,
+    model_short: str,
+    speed: "BenchResult | None",
+    quality: "QualityResult | None",
+) -> None:
+    """Write one JSON file per variant as soon as it finishes."""
+    if run_dir is None:
+        return
+    quant = (speed or quality).quant
+    slug = f"{model_short}_{quant}".lower().replace(" ", "_")
+    payload: dict = {
+        "model": model_name,
+        "model_short": model_short,
+        "quant": quant,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    if speed is not None:
+        payload["speed"] = {
+            "prefill_toks_s": round(speed.prefill_toks_s, 2),
+            "decode_toks_s": round(speed.decode_toks_s, 2),
+            "ttft_mean_ms": round(speed.ttft_mean, 2),
+            "ttft_std_ms": round(speed.ttft_std, 2),
+            "tpot_mean_ms": round(speed.tpot_mean, 3),
+            "tpot_std_ms": round(speed.tpot_std, 3),
+            "latency_mean_ms": round(speed.lat_mean, 2),
+            "latency_std_ms": round(speed.lat_std, 2),
+            "weight_mem_gib": round(speed.weight_mem_gib, 3),
+            "peak_mem_gib": round(speed.peak_mem_gib, 3),
+        }
+    if quality is not None:
+        payload["quality"] = {
+            "ppl": round(quality.ppl, 4),
+            "ppl_std": round(quality.ppl_std, 5),
+            "hellaswag_pct": round(quality.hellaswag, 2),
+            "winogrande_pct": round(quality.winogrande, 2),
+        }
+    out_path = Path(run_dir) / f"{slug}.json"
+    out_path.write_text(json.dumps(payload, indent=2))
+    log.info(f"  wrote {out_path}")
+
+
 def _build_speed_latex(all_results: list[ModelResults]) -> str:
     lines: list[str] = []
     lines.append(r"\begin{table*}[t]")
@@ -770,6 +817,7 @@ def benchmark_model(
     model_cfg: dict,
     work_dir: Path,
     args: argparse.Namespace,
+    run_dir: str | None = None,
 ) -> ModelResults:
     model_name = model_cfg["name"]
     model_short = model_cfg["short"]
@@ -867,6 +915,14 @@ def benchmark_model(
                 winogrande=winogrande_acc,
             ))
 
+        _dump_variant_json(
+            run_dir,
+            model_name=model_name,
+            model_short=model_short,
+            speed=speed_results[-1] if speed_results and speed_results[-1].quant == label else None,
+            quality=quality_results[-1] if quality_results and quality_results[-1].quant == label else None,
+        )
+
         del model, tokenizer
         _free_model()
 
@@ -928,7 +984,7 @@ def main() -> None:
     for key in model_keys:
         m = MODELS[key]
         model_work_dir = Path(args.work_dir) / key
-        mr = benchmark_model(m, model_work_dir, args)
+        mr = benchmark_model(m, model_work_dir, args, run_dir=run_dir)
         all_results.append(mr)
 
     if not args.skip_speed:
