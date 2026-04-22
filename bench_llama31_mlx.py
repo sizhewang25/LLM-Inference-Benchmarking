@@ -24,6 +24,13 @@ Quality metrics:
 Usage:
   python bench_llama31_mlx.py --models llama
   python bench_llama31_mlx.py --models llama,qwen,gemma --eval
+  python bench_llama31_mlx.py --models llama,qwen,gemma --variants mxfp8,mxfp4
+  python bench_llama31_mlx.py --models llama --variants fp16,8bit,4bit,mxfp8,mxfp4 --eval
+
+Note on mxfp8 / mxfp4:
+  Pre-quantize first with quantize_mlx.py; the bench script loads from
+  ./models/<model-short>_mxfp8 (or mxfp4) and auto-quantizes on first run
+  if the directory is absent.
 """
 
 from __future__ import annotations
@@ -72,6 +79,9 @@ MODELS = {
         "fp16_id": "mlx-community/Meta-Llama-3.1-8B-Instruct-bf16",
         "mlx_8bit_id": "mlx-community/Meta-Llama-3.1-8B-Instruct-8bit",
         "mlx_4bit_id": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
+        "mlx_2bit_id": None,
+        "mxfp8_id": None,
+        "mxfp4_id": None,
     },
     "qwen": {
         "name": "Qwen2.5-7B-Instruct",
@@ -79,6 +89,9 @@ MODELS = {
         "fp16_id": "Qwen/Qwen2.5-7B-Instruct",
         "mlx_8bit_id": "mlx-community/Qwen2.5-7B-Instruct-8bit",
         "mlx_4bit_id": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+        "mlx_2bit_id": None,
+        "mxfp8_id": None,
+        "mxfp4_id": None,
     },
     "gemma": {
         "name": "Gemma-2-9B-IT",
@@ -86,6 +99,9 @@ MODELS = {
         "fp16_id": "mlx-community/gemma-2-9b-it-fp16",
         "mlx_8bit_id": "mlx-community/gemma-2-9b-it-8bit",
         "mlx_4bit_id": "mlx-community/gemma-2-9b-it-4bit",
+        "mlx_2bit_id": None,
+        "mxfp8_id": None,
+        "mxfp4_id": None,
     },
 }
 
@@ -771,20 +787,31 @@ def print_quality_results(
 
 # ── quantization helpers ──────────────────────────────────────────────────────
 
-def _ensure_local_quant(source_fp16: str, out_dir: Path, bits: int) -> None:
+def _ensure_local_quant(
+    source_fp16: str, out_dir: Path, bits: int,
+    group_size: int = 64, q_mode: str | None = None,
+) -> None:
     """Self-quantize via mlx_lm.convert if out_dir doesn't exist or is empty."""
-    if out_dir.exists() and any(out_dir.iterdir()):
-        return
+    if out_dir.exists():
+        if any(out_dir.iterdir()):
+            return  # already quantized
+        out_dir.rmdir()  # empty dir from a prior failed run — mlx_lm requires it absent
     out_dir.parent.mkdir(parents=True, exist_ok=True)
-    log.info(f"  self-quantizing {source_fp16} to {bits}-bit at {out_dir}…")
-    subprocess.run([
+    mode_str = f" --q-mode {q_mode}" if q_mode else f" gs{group_size}"
+    log.info(f"  self-quantizing {source_fp16} → {bits}-bit{mode_str} at {out_dir}…")
+    cmd = [
         sys.executable, "-m", "mlx_lm", "convert",
         "--hf-path", source_fp16,
         "-q",
         "--q-bits", str(bits),
-        "--q-group-size", "64",
         "--mlx-path", str(out_dir),
-    ], check=True)
+    ]
+    if q_mode is not None:
+        # mxfp* modes have fixed group sizes; skip --q-group-size to use their defaults
+        cmd += ["--q-mode", q_mode]
+    else:
+        cmd += ["--q-group-size", str(group_size)]
+    subprocess.run(cmd, check=True)
 
 
 def _resolve_and_load(
@@ -793,6 +820,8 @@ def _resolve_and_load(
     fp16_fallback: str | None,
     bits: int | None,
     local_quant_dir: Path | None,
+    group_size: int = 64,
+    q_mode: str | None = None,
 ) -> tuple[object, object]:
     """Try mlx-community pre-quantized first; on failure, self-quantize from
     fp16_fallback into local_quant_dir. Returns (model, tokenizer)."""
@@ -806,7 +835,7 @@ def _resolve_and_load(
     if fp16_fallback is None or local_quant_dir is None or bits is None:
         raise RuntimeError(f"no fallback available for {variant_label}")
 
-    _ensure_local_quant(fp16_fallback, local_quant_dir, bits)
+    _ensure_local_quant(fp16_fallback, local_quant_dir, bits, group_size, q_mode)
     log.info(f"  Loading {variant_label}: {local_quant_dir}")
     return mlx_load(str(local_quant_dir))
 
@@ -827,8 +856,10 @@ def benchmark_model(
     log.info(f"{'='*80}")
 
     fp16_id = model_cfg["fp16_id"]
-    q8_dir = work_dir / "mlx_8bit"
-    q4_dir = work_dir / "mlx_4bit"
+
+    def _local(label: str) -> Path:
+        # e.g. ./models/Llama-3.1-8B_mxfp8  or  ./models/Llama-3.1-8B_mlx_4bit
+        return work_dir / f"{model_short}_{label.lower()}"
 
     variants = [
         dict(
@@ -838,6 +869,7 @@ def benchmark_model(
             fallback_fp16=None,
             bits=None,
             local_dir=None,
+            q_mode=None,
         ),
         dict(
             label="MLX_8bit",
@@ -845,7 +877,8 @@ def benchmark_model(
             mlx_id=model_cfg.get("mlx_8bit_id"),
             fallback_fp16=fp16_id,
             bits=8,
-            local_dir=q8_dir,
+            local_dir=_local("MLX_8bit"),
+            q_mode=None,
         ),
         dict(
             label="MLX_4bit",
@@ -853,9 +886,50 @@ def benchmark_model(
             mlx_id=model_cfg.get("mlx_4bit_id"),
             fallback_fp16=fp16_id,
             bits=4,
-            local_dir=q4_dir,
+            local_dir=_local("MLX_4bit"),
+            q_mode=None,
+        ),
+        dict(
+            label="MLX_2bit",
+            is_fp16=False,
+            mlx_id=model_cfg.get("mlx_2bit_id"),
+            fallback_fp16=fp16_id,
+            bits=2,
+            local_dir=_local("MLX_2bit"),
+            q_mode=None,
+        ),
+        dict(
+            label="MXFP8",
+            is_fp16=False,
+            mlx_id=model_cfg.get("mxfp8_id"),
+            fallback_fp16=fp16_id,
+            bits=8,
+            local_dir=_local("MXFP8"),
+            q_mode="mxfp8",
+        ),
+        dict(
+            label="MXFP4",
+            is_fp16=False,
+            mlx_id=model_cfg.get("mxfp4_id"),
+            fallback_fp16=fp16_id,
+            bits=4,
+            local_dir=_local("MXFP4"),
+            q_mode="mxfp4",
         ),
     ]
+
+    if args.variants is not None:
+        requested = {v.strip().lower() for v in args.variants.split(",")}
+        _label_map = {
+            "fp16": "FP16",
+            "8bit": "MLX_8bit",
+            "4bit": "MLX_4bit",
+            "2bit": "MLX_2bit",
+            "mxfp8": "MXFP8",
+            "mxfp4": "MXFP4",
+        }
+        allowed = {_label_map[r] for r in requested if r in _label_map}
+        variants = [v for v in variants if v["label"] in allowed]
 
     # Build the prompt once using the FP16 tokenizer (quant variants share the
     # same tokenizer family; tokenization is model-family-stable).
@@ -880,6 +954,8 @@ def benchmark_model(
             fp16_fallback=v["fallback_fp16"],
             bits=v["bits"],
             local_quant_dir=v["local_dir"],
+            group_size=args.quant_group_size,
+            q_mode=v["q_mode"],
         )
         mx.eval(model.parameters())
         weight_mem = _weight_mem_gib()
@@ -945,8 +1021,11 @@ def parse_args() -> argparse.Namespace:
         "--models", default="llama",
         help="Comma-separated model keys to benchmark: llama,qwen,gemma (default: llama)",
     )
-    p.add_argument("--work-dir", default="/tmp/mlx_bench",
-                   help="Root directory for self-quantized model artifacts.")
+    p.add_argument("--work-dir", default="./models",
+                   help="Root directory for quantized model artifacts "
+                        "(default: ./models). Each variant is saved as "
+                        "<work-dir>/<model-short>_<variant>, e.g. "
+                        "models/Llama-3.1-8B_mxfp8.")
     p.add_argument("--warmup", type=int, default=WARMUP_RUNS)
     p.add_argument("--trials", type=int, default=LATENCY_RUNS)
     p.add_argument("--skip-quantize", action="store_true",
@@ -959,6 +1038,19 @@ def parse_args() -> argparse.Namespace:
                    help="Skip speed benchmarks (useful when only running --eval).")
     p.add_argument("--eval", action="store_true",
                    help="Run quality evaluation (PPL, HellaSwag, Winogrande).")
+    p.add_argument(
+        "--variants", default=None,
+        help=(
+            "Comma-separated quant levels to run: fp16,8bit,4bit,2bit,mxfp8,mxfp4 "
+            "(default: all). Example: --variants mxfp8,mxfp4"
+        ),
+    )
+    p.add_argument(
+        "--quant-group-size", type=int, default=64,
+        choices=[32, 64, 128],
+        help="Group size for self-quantization fallback (default: 64). "
+             "MLX supports 32, 64, 128. Larger = coarser scales, closer to llama.cpp QK_K.",
+    )
     return p.parse_args()
 
 
@@ -983,8 +1075,7 @@ def main() -> None:
 
     for key in model_keys:
         m = MODELS[key]
-        model_work_dir = Path(args.work_dir) / key
-        mr = benchmark_model(m, model_work_dir, args, run_dir=run_dir)
+        mr = benchmark_model(m, Path(args.work_dir), args, run_dir=run_dir)
         all_results.append(mr)
 
     if not args.skip_speed:
